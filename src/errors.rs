@@ -38,4 +38,9 @@ pub enum PixelError {
     SigkeyNotFound {
         t: u128
     },
+    #[fail(display = "Cannot update key to previous time={}, current time={}", old_t, current_t)]
+    SigkeyUpdateBackward {
+        old_t: u128,
+        current_t: u128
+    },
 }
