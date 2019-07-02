@@ -312,6 +312,7 @@ impl SigkeySet {
         Ok(())
     }
 
+    /// Derive signing key denoted by path `key_path` using its predecessor node's signing key `pred_sk`
     fn derive_key<R: RngCore + CryptoRng>(key_path: &[u8], pred_sk: &Sigkey, pred_sk_path_len: usize, l: u8, gens: &GeneratorSet, rng: &mut R) -> Result<Sigkey, PixelError> {
         // TODO: Move to lazy_static
         let f1 = FieldElement::one();               // f1 = 1

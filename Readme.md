@@ -3,7 +3,7 @@
 1. Based on the paper [Pixel: Multi-signatures for Consensus](https://eprint.iacr.org/2019/514) 
 2. Using [Apache Milagro](https://github.com/milagro-crypto/amcl).
 3. Contains the simple key update and fast forward update mechanism. 
-4. Signature aggregation is pending but should be similar to BLS sig aggregation.
+4. Signature aggregation is pending but is very similar to BLS signature aggregation.
 
 ## Overview
 Forward security is achieved by dividing time into periods and each time period has an associated signing key. 

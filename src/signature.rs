@@ -71,12 +71,13 @@ impl Signature {
         let mut sigma_1_1 = calculate_path_factor_using_t_l(t, l, gens)?;
         sigma_1_1 += &gens.1[l as usize +1] * m;
         let lhs = GT::ate_pairing(&self.sigma_1, &g2);
-        let rhs1 = GT::ate_pairing(h, y);
+        let rhs1 = GT::ate_pairing(h, y);       // This can be pre-computed
         let rhs2 = GT::ate_pairing(&sigma_1_1, &self.sigma_2);
         let rhs = GT::mul(&rhs1, &rhs2);
         Ok(lhs == rhs)
     }
 
+    /// Hash message in the field before signing or verification
     pub fn hash_message(message: &[u8]) -> FieldElement {
         // Fixme: This is not accurate and might affect the security proof but should work in practice
         FieldElement::from_msg_hash(message)
