@@ -40,3 +40,4 @@ When t=4, keys for node 4 and 5 are generated since their parent node 3 needs to
 6. Call `Signature::verify` to verify a signature.
 7. Call `AggregatedVerkey::new` to aggregate verkeys.
 8. Call `AggregatedSignature::new` to aggregate signatures.
+8. Call `AggregatedSignature::verify` to verify aggregated signature.
