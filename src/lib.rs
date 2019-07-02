@@ -9,5 +9,6 @@ pub mod util;
 pub mod setup;
 pub mod errors;
 pub mod signature;
+pub mod aggregate_signature;
 
 

@@ -9,6 +9,7 @@ use amcl_wrapper::group_elem_g2::G2;
 use super::errors::PixelError;
 use std::collections::{HashMap, HashSet};
 use crate::util::{calculate_l, from_node_num_to_path, path_to_node_num, calculate_path_factor, node_successor_paths};
+use amcl_wrapper::extension_field_gt::GT;
 
 pub struct MasterSecret {
     value: FieldElement
@@ -58,6 +59,14 @@ impl Verkey {
         self.value.to_bytes()
     }
 
+    pub fn is_identity(&self) -> bool {
+        if self.value.is_identity() {
+            println!("Verkey point at infinity");
+            return true;
+        }
+        return false;
+    }
+
     // add verify PoP function. Use match expression to match on group types and then call the pairing.
 }
 
@@ -68,10 +77,12 @@ impl Verkey {
 pub struct Keypair {
     // Fixme: Probably the master secret does not need to be persisted once the initial signing keys and PoP has been generated.
     // Seems like a bad idea to make it part of struct.
-    master_secret: MasterSecret,
+    pub master_secret: MasterSecret,
     pub ver_key: Verkey,
     pub pop: G1     // pop is Proof of Possession
 }
+
+const PrefixPoP: &[u8] = b"PoP";
 
 impl Keypair {
     pub fn new<R: RngCore + CryptoRng>(generator: &G2, rng: &mut R) -> Self {
@@ -83,11 +94,20 @@ impl Keypair {
 
     /// Generate proof of possession
     fn gen_pop(vk: &Verkey, x: &MasterSecret) -> G1 {
-        let prefix_pop = b"PoP";
-        let mut s = prefix_pop.to_vec();
+        Self::msg_for_pop(vk) * &x.value
+    }
+
+    /// Verify proof of possession
+    pub fn verify_pop(pop: &G1, vk: &Verkey, gen: &G2) -> bool {
+        let lhs = GT::ate_pairing(pop, &gen);
+        let rhs = GT::ate_pairing(&Self::msg_for_pop(vk), &vk.value);
+        lhs == rhs
+    }
+
+    fn msg_for_pop(vk: &Verkey) -> G1 {
+        let mut s = PrefixPoP.to_vec();
         s.extend_from_slice(&vk.to_bytes());
-        let g = G1::from_msg_hash(&s);
-        g * &x.value
+        G1::from_msg_hash(&s)
     }
 }
 
@@ -255,9 +275,8 @@ impl SigkeySet {
             !self.has_key(n)
         }).collect();
 
-        let cur_sk = self.get_current_key()?;
         match self.get_key(t) {
-            Ok(key) => (),     // Key and thus all needed successors already present
+            Ok(_) => (),     // Key and thus all needed successors already present
             Err(_) => {
                 // Key absent. Calculate the highest predecessor path and key to derive necessary children.
                 let pred_sk_path: Vec<u8> = if self.has_key(1) {
@@ -343,7 +362,7 @@ impl SigkeySet {
             let j = l as usize - i + 1;
             let a = pred_sk.1[pred_sk_len-j];
             let b = (gens.1[gen_len-j] * r);
-            let mut e = a + b;
+            let e = a + b;
             sk_t_prime_prime.push(e);
         }
 
@@ -384,18 +403,24 @@ mod tests {
     }
 
     #[test]
+    fn test_proof_of_possession() {
+        let mut rng = rand::thread_rng();
+        let T1 = 7;
+        let (gens, verkey, _, PoP) = setup::<ThreadRng>(T1, "test_pixel", &mut rng).unwrap();
+        assert!(Keypair::verify_pop(&PoP, &verkey, &gens.0))
+    }
+
+    #[test]
     fn test_setup() {
         let mut rng = rand::thread_rng();
         let T1 = 7;
         let l1 = calculate_l(T1).unwrap();
-        //let (_, _, set1,_) = setup::<ThreadRng, G1, G2>(T1, "test_pixel", &mut rng).unwrap();
         let (_, _, set1, _) = setup::<ThreadRng>(T1, "test_pixel", &mut rng).unwrap();
         let sk1 = set1.get_key(1u128).unwrap();
         assert_eq!(sk1.1.len() as u8, l1 + 1);
 
         let T2 = 15;
         let l2 = calculate_l(T2).unwrap();
-        //let (_, _, set2,_) = setup::<ThreadRng, G1, G2>(T2, "test_pixel", &mut rng).unwrap();
         let (_, _, set2, _) = setup::<ThreadRng>(T2, "test_pixel", &mut rng).unwrap();
         let sk2 = set2.get_key(1u128).unwrap();
         assert_eq!(sk2.1.len() as u8, l2 + 1);

@@ -26,8 +26,8 @@ macro_rules! ate_pairing {
 }*/
 
 pub struct Signature {
-    sigma_1: G1,
-    sigma_2: G2,
+    pub sigma_1: G1,
+    pub sigma_2: G2,
 }
 
 impl Signature {
@@ -36,7 +36,6 @@ impl Signature {
                                        sig_key: &Sigkey,
                                        rng: &mut R) -> Result<Self, PixelError> {
         // TODO: Check length of sig_key is sufficient to for t. Also check for sufficient length of gens.
-        let path = from_node_num_to_path(t, l)?;
         let c: G2 = sig_key.0.clone();
         let d: G1 = sig_key.1[0].clone();
         let r = FieldElement::random_using_rng(rng);
@@ -61,26 +60,45 @@ impl Signature {
     }
 
 
-    pub fn verify(&self, msg: &[u8], t: u128, l:u8 ,
+    pub fn verify(&self, msg: &[u8], t: u128, l:u8,
                   gens: &GeneratorSet, verkey: &Verkey) -> Result<bool, PixelError> {
-        // Hash(msg) -> FieldElement
-        let h = &gens.1[0];
-        let g2 = &gens.0;
-        let y = &verkey.value;
-        let m = Self::hash_message(msg);
-        let mut sigma_1_1 = calculate_path_factor_using_t_l(t, l, gens)?;
-        sigma_1_1 += &gens.1[l as usize +1] * m;
-        let lhs = GT::ate_pairing(&self.sigma_1, &g2);
-        let rhs1 = GT::ate_pairing(h, y);       // This can be pre-computed
-        let rhs2 = GT::ate_pairing(&sigma_1_1, &self.sigma_2);
-        let rhs = GT::mul(&rhs1, &rhs2);
-        Ok(lhs == rhs)
+        if self.is_identity() || verkey.is_identity() {
+            return Ok(false);
+        }
+        Self::verify_naked(&self.sigma_1, &self.sigma_2, &verkey.value, msg, t, l, gens)
     }
 
     /// Hash message in the field before signing or verification
     pub fn hash_message(message: &[u8]) -> FieldElement {
         // Fixme: This is not accurate and might affect the security proof but should work in practice
         FieldElement::from_msg_hash(message)
+    }
+
+    pub fn verify_naked(sigma_1: &G1, sigma_2: &G2, verkey: &G2,
+                        msg: &[u8], t: u128, l:u8 , gens: &GeneratorSet) -> Result<bool, PixelError> {
+        let h = &gens.1[0];
+        let g2 = &gens.0;
+        let y = verkey;
+        let m = Self::hash_message(msg);
+        let mut sigma_1_1 = calculate_path_factor_using_t_l(t, l, gens)?;
+        sigma_1_1 += &gens.1[l as usize +1] * m;
+        let lhs = GT::ate_pairing(sigma_1, &g2);
+        let rhs1 = GT::ate_pairing(h, y);       // This can be pre-computed
+        let rhs2 = GT::ate_pairing(&sigma_1_1, sigma_2);
+        let rhs = GT::mul(&rhs1, &rhs2);
+        Ok(lhs == rhs)
+    }
+
+    pub fn is_identity(&self) -> bool {
+        if self.sigma_1.is_identity() {
+            println!("Signature point in G1 at infinity");
+            return true;
+        }
+        if self.sigma_2.is_identity() {
+            println!("Signature point in G2 at infinity");
+            return true;
+        }
+        return false;
     }
 }
 
@@ -92,7 +110,7 @@ mod tests {
     use crate::setup::{setup, SigkeySet};
     use crate::util::calculate_l;
 
-    fn create_sig_and_verify<R: RngCore + CryptoRng>(set: &SigkeySet, t: u128, vk: &Verkey, l: u8, gens: &GeneratorSet, mut rng: &mut R) {
+    pub fn create_sig_and_verify<R: RngCore + CryptoRng>(set: &SigkeySet, t: u128, vk: &Verkey, l: u8, gens: &GeneratorSet, mut rng: &mut R) {
         let sk = set.get_key(t).unwrap();
         let msg = "Hello".as_bytes();
         let sig = Signature::new(msg, t, l, &gens, &sk, &mut rng).unwrap();

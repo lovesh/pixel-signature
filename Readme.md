@@ -3,7 +3,6 @@
 1. Based on the paper [Pixel: Multi-signatures for Consensus](https://eprint.iacr.org/2019/514) 
 2. Using [Apache Milagro](https://github.com/milagro-crypto/amcl).
 3. Contains the simple key update and fast forward update mechanism. 
-4. Signature aggregation is pending but is very similar to BLS signature aggregation.
 
 ## Overview
 Forward security is achieved by dividing time into periods and each time period has an associated signing key. 
@@ -36,5 +35,8 @@ When t=4, keys for node 4 and 5 are generated since their parent node 3 needs to
    - To advance to any arbitrary time i future, call `fast_forward_update`. 
    - To get current key call `get_current_key`.    
 3. Call the `setup` function to create the generators, verification key, `SigkeySet` with key for t=1 and the proof of possession.
-4. Call `Signature::new` to generate a signature on a message.
-5. Call `Signature::verify` to verify a signature.
+4. Call `Keypair::verify_pop` to verify proof of possession. 
+5. Call `Signature::new` to generate a signature on a message.
+6. Call `Signature::verify` to verify a signature.
+7. Call `AggregatedVerkey::new` to aggregate verkeys.
+8. Call `AggregatedSignature::new` to aggregate signatures.
