@@ -7,8 +7,8 @@ use amcl_wrapper::group_elem_g1::G1;
 use amcl_wrapper::group_elem_g2::G2;
 
 use super::errors::PixelError;
-use std::collections::HashMap;
-use crate::util::{calculate_l, from_node_num_to_path, path_to_node_num, calculate_path_factor};
+use std::collections::{HashMap, HashSet};
+use crate::util::{calculate_l, from_node_num_to_path, path_to_node_num, calculate_path_factor, node_successor_paths};
 
 pub struct MasterSecret {
     value: FieldElement
@@ -171,11 +171,15 @@ impl SigkeySet {
         }
     }
 
+    pub fn get_current_key(&self) -> Result<&Sigkey, PixelError> {
+        self.get_key(self.t)
+    }
+
     /// Update time by 1
     pub fn simple_update<R: RngCore + CryptoRng>(&mut self, gens: &GeneratorSet, rng: &mut R) -> Result<(), PixelError> {
         let path = from_node_num_to_path(self.t, self.l)?;
         let path_len = path.len();
-        let sk = self.get_key(self.t)?;
+        let sk = self.get_current_key()?;
         // sk.1.len() + path_len == l+1
         debug_assert_eq!(self.l as usize + 1, sk.1.len() + path_len);
 
@@ -198,15 +202,19 @@ impl SigkeySet {
 
             let r = FieldElement::random_using_rng(rng);
             let f2 = FieldElement::from(2u32);       // f2 = 2
+            // d * e_j^2
             let mut sk_right_prime_prime = vec![d + (sk.1[1] * f2)];
+            // h_0 * h_1^path[0] * h_2^path[1] * ... h_k^path[-1]
             let path_factor = calculate_path_factor(path_right, &gens)?;
-            sk_right_prime_prime[0] = sk_right_prime_prime[0] + (path_factor * r);
+            // d * e_j^2 * (h_0 * h_1^path[0] * h_2^path[1] * ... h_k^path[-1])^r
+            sk_right_prime_prime[0] += (path_factor * r);
 
             for i in 2..sk.1.len() {
-                let mut e = sk.1[i] + (gens.1[path_right_len+i] * r);
+                let e = sk.1[i] + (gens.1[path_right_len+i] * r);
                 sk_right_prime_prime.push(e);
             }
 
+            // Update the set with keys for both children and remove key corresponding to current time period
             self.keys.insert(self.t + 1, Sigkey(c, sk_left_prime_prime));
             self.keys.insert(node_num_right, Sigkey(c + (gens.0 * r), sk_right_prime_prime));
             self.keys.remove(&self.t);
@@ -221,14 +229,124 @@ impl SigkeySet {
 
     /// Update time to given `t`
     pub fn fast_forward_update<R: RngCore + CryptoRng>(&mut self, t: u128, gens: &GeneratorSet, rng: &mut R) -> Result<(), PixelError> {
+        if t > ((1 << self.l) - 1) as u128 {
+            return Err(PixelError::InvalidNodeNum {t, l: self.l})
+        }
+
         if t < self.t {
             return Err(PixelError::SigkeyUpdateBackward {old_t: t, current_t: self.t})
         }
         if t == self.t {
+            println!("Key already present");
             return Ok(())
         }
 
-        unimplemented!()
+        if (t - self.t) == 1 {
+            // Simple update is more efficient
+            return self.simple_update(gens, rng)
+        }
+
+        // Find key for t and all of t's successors
+        let t_path = from_node_num_to_path(t, self.l)?;
+        let successor_paths = node_successor_paths(t, self.l)?;
+        // The set might already have keys for some successors, filter them out.
+        let successors_to_update_paths: Vec<_> = successor_paths.iter().filter(|p| {
+            let n = path_to_node_num(p, self.l).unwrap();
+            !self.has_key(n)
+        }).collect();
+
+        let cur_sk = self.get_current_key()?;
+        match self.get_key(t) {
+            Ok(key) => (),     // Key and thus all needed successors already present
+            Err(_) => {
+                // Key absent. Calculate the highest predecessor path and key to derive necessary children.
+                let pred_sk_path: Vec<u8> = if self.has_key(1) {
+                    vec![]
+                } else {
+                    let mut cur_path = vec![];
+                    for p in &t_path {
+                        cur_path.push(*p);
+                        if self.has_key(path_to_node_num(&cur_path, self.l)?) {
+                            break
+                        }
+                    }
+                    cur_path
+                };
+                let pred_node_num = path_to_node_num(&pred_sk_path, self.l)?;
+                let pred_sk = {
+                    self.get_key(pred_node_num)?.clone()
+                };
+                let pred_sk_path_len = pred_sk_path.len();
+
+                let keys = {
+                    let mut keys = vec![];
+                    // Calculate key for time t
+                    let sk_t = Self::derive_key(&t_path, pred_sk, pred_sk_path_len, self.l, gens, rng)?;
+                    keys.push((t, sk_t));
+
+                    for path in &successors_to_update_paths {
+                        let n = path_to_node_num(*path, self.l)?;
+                        keys.push((n, Self::derive_key(&path, pred_sk, pred_sk_path_len, self.l, gens, rng)?));
+                    }
+                    keys
+                };
+
+                for (i,k) in keys {
+                    self.keys.insert(i, k);
+                }
+            }
+        };
+
+        // Remove all nodes except successors and the node for time t.
+        let all_key_node_nums: HashSet<_> = self.keys.keys().map(|k| *k).collect();
+        // Keep successors
+        let mut node_num_to_keep: HashSet<u128> = successor_paths.iter().map(|p| path_to_node_num(p, self.l).unwrap()).collect();
+        // Keep the node for time being forwarded to
+        node_num_to_keep.insert(t);
+        // Remove all others
+        let nodes_to_remove = all_key_node_nums.difference(&node_num_to_keep);
+        for n in nodes_to_remove {
+            self.keys.remove(n);
+        }
+        self.t = t;
+        Ok(())
+    }
+
+    fn derive_key<R: RngCore + CryptoRng>(key_path: &[u8], pred_sk: &Sigkey, pred_sk_path_len: usize, l: u8, gens: &GeneratorSet, rng: &mut R) -> Result<Sigkey, PixelError> {
+        // TODO: Move to lazy_static
+        let f1 = FieldElement::one();               // f1 = 1
+        let f2 = FieldElement::from(2u32);       // f2 = 2
+
+        let key_path_len = key_path.len();
+        let r = FieldElement::random_using_rng(rng);
+
+        let c: G2 = pred_sk.0.clone();
+        let mut d: G1 = pred_sk.1[0].clone();
+        for i in pred_sk_path_len..key_path_len {
+            if key_path[i] == 1 {
+                d += pred_sk.1[i-pred_sk_path_len+1] * &f1;
+            } else {
+                d += pred_sk.1[i-pred_sk_path_len+1] * &f2;
+            }
+        }
+        let path_factor = calculate_path_factor(key_path.to_vec(), &gens)?;
+        d += (path_factor * r);
+
+        let sk_t_prime = c + (&gens.0 * r);
+        let mut sk_t_prime_prime = vec![];
+        sk_t_prime_prime.push(d);
+
+        let pred_sk_len = pred_sk.1.len();
+        let gen_len = gens.1.len();
+        for i in (key_path_len+1)..(l as usize + 1) {
+            let j = l as usize - i + 1;
+            let a = pred_sk.1[pred_sk_len-j];
+            let b = (gens.1[gen_len-j] * r);
+            let mut e = a + b;
+            sk_t_prime_prime.push(e);
+        }
+
+        Ok(Sigkey(sk_t_prime, sk_t_prime_prime))
     }
 }
 
@@ -255,22 +373,31 @@ mod tests {
     use super::*;
     use rand::rngs::ThreadRng;
 
+    fn fast_forward_and_check<R: RngCore + CryptoRng>(set: &mut SigkeySet, t: u128, gens: &GeneratorSet, mut rng: &mut R) {
+        set.fast_forward_update(t, &gens, &mut rng).unwrap();
+        assert_eq!(set.t, t);
+        for i in 1..t {
+            assert!(!set.has_key(i as u128));
+        }
+        assert!(set.has_key(t));
+    }
+
     #[test]
     fn test_setup() {
         let mut rng = rand::thread_rng();
         let T1 = 7;
         let l1 = calculate_l(T1).unwrap();
         //let (_, _, set1,_) = setup::<ThreadRng, G1, G2>(T1, "test_pixel", &mut rng).unwrap();
-        let (_, _, set1,_) = setup::<ThreadRng>(T1, "test_pixel", &mut rng).unwrap();
+        let (_, _, set1, _) = setup::<ThreadRng>(T1, "test_pixel", &mut rng).unwrap();
         let sk1 = set1.get_key(1u128).unwrap();
-        assert_eq!(sk1.1.len() as u8, l1+1);
+        assert_eq!(sk1.1.len() as u8, l1 + 1);
 
         let T2 = 15;
         let l2 = calculate_l(T2).unwrap();
         //let (_, _, set2,_) = setup::<ThreadRng, G1, G2>(T2, "test_pixel", &mut rng).unwrap();
-        let (_, _, set2,_) = setup::<ThreadRng>(T2, "test_pixel", &mut rng).unwrap();
+        let (_, _, set2, _) = setup::<ThreadRng>(T2, "test_pixel", &mut rng).unwrap();
         let sk2 = set2.get_key(1u128).unwrap();
-        assert_eq!(sk2.1.len() as u8, l2+1);
+        assert_eq!(sk2.1.len() as u8, l2 + 1);
     }
 
     #[test]
@@ -280,7 +407,7 @@ mod tests {
         let mut rng = rand::thread_rng();
         let T = 7;
         let l = calculate_l(T).unwrap();
-        let (gens, _, mut set,_) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+        let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
 
         // t=2
         set.simple_update(&gens, &mut rng).unwrap();
@@ -288,41 +415,41 @@ mod tests {
         assert_eq!(sk_left.1.len() as u8, l);
         let sk_right = set.get_key(5u128).unwrap();
         assert_eq!(sk_right.1.len() as u8, l);
-        assert_eq!(set.t as u8, 2);
+        assert_eq!(set.t, 2);
         assert!(!set.has_key(1u128));
 
         // t=3
         set.simple_update(&gens, &mut rng).unwrap();
         let sk_left = set.get_key(3u128).unwrap();
-        assert_eq!(sk_left.1.len() as u8, l-1);
+        assert_eq!(sk_left.1.len() as u8, l - 1);
         let sk_right = set.get_key(4u128).unwrap();
-        assert_eq!(sk_right.1.len() as u8, l-1);
-        assert_eq!(set.t as u8, 3);
+        assert_eq!(sk_right.1.len() as u8, l - 1);
+        assert_eq!(set.t, 3);
         assert!(!set.has_key(2u128));
         assert!(set.has_key(5u128));
 
         // t=4
         set.simple_update(&gens, &mut rng).unwrap();
-        assert_eq!(set.t as u8, 4);
+        assert_eq!(set.t, 4);
         assert!(!set.has_key(3u128));
         assert!(set.has_key(4u128));
         assert!(set.has_key(5u128));
 
         // t=5
         set.simple_update(&gens, &mut rng).unwrap();
-        assert_eq!(set.t as u8, 5);
+        assert_eq!(set.t, 5);
         assert!(!set.has_key(4u128));
 
         // t=6
         set.simple_update(&gens, &mut rng).unwrap();
-        assert_eq!(set.t as u8, 6);
+        assert_eq!(set.t, 6);
         assert!(!set.has_key(5u128));
         assert!(set.has_key(6u128));
         assert!(set.has_key(7u128));
 
         // t=7
         set.simple_update(&gens, &mut rng).unwrap();
-        assert_eq!(set.t as u8, 7);
+        assert_eq!(set.t, 7);
         assert!(!set.has_key(6u128));
         assert!(set.has_key(7u128));
     }
@@ -343,23 +470,23 @@ mod tests {
         assert_eq!(sk_left.1.len() as u8, l);
         let sk_right = set.get_key(9u128).unwrap();
         assert_eq!(sk_right.1.len() as u8, l);
-        assert_eq!(set.t as u8, 2);
+        assert_eq!(set.t, 2);
         assert!(!set.has_key(1u128));
         assert!(set.has_key(9u128));
 
         // t=3
         set.simple_update(&gens, &mut rng).unwrap();
         let sk_left = set.get_key(3u128).unwrap();
-        assert_eq!(sk_left.1.len() as u8, l-1);
+        assert_eq!(sk_left.1.len() as u8, l - 1);
         let sk_right = set.get_key(6u128).unwrap();
-        assert_eq!(sk_right.1.len() as u8, l-1);
-        assert_eq!(set.t as u8, 3);
+        assert_eq!(sk_right.1.len() as u8, l - 1);
+        assert_eq!(set.t, 3);
         assert!(!set.has_key(2u128));
         assert!(set.has_key(9u128));
 
         // t=4
         set.simple_update(&gens, &mut rng).unwrap();
-        assert_eq!(set.t as u8, 4);
+        assert_eq!(set.t, 4);
         assert!(!set.has_key(3u128));
         assert!(set.has_key(5u128));
         assert!(set.has_key(6u128));
@@ -367,21 +494,21 @@ mod tests {
 
         // t=5
         set.simple_update(&gens, &mut rng).unwrap();
-        assert_eq!(set.t as u8, 5);
+        assert_eq!(set.t, 5);
         assert!(!set.has_key(4u128));
         assert!(set.has_key(6u128));
         assert!(set.has_key(9u128));
 
         // t=6
         set.simple_update(&gens, &mut rng).unwrap();
-        assert_eq!(set.t as u8, 6);
+        assert_eq!(set.t, 6);
         assert!(!set.has_key(5u128));
         assert!(set.has_key(6u128));
         assert!(set.has_key(9u128));
 
         // t=7
         set.simple_update(&gens, &mut rng).unwrap();
-        assert_eq!(set.t as u8, 7);
+        assert_eq!(set.t, 7);
         assert!(!set.has_key(6u128));
         assert!(set.has_key(8u128));
         assert!(set.has_key(9u128));
@@ -394,15 +521,216 @@ mod tests {
 
         // t=10
         set.simple_update(&gens, &mut rng).unwrap();
-        assert_eq!(set.t as u8, 10);
+        assert_eq!(set.t, 10);
         assert!(!set.has_key(9u128));
         assert!(set.has_key(13u128));
 
         // t=11
         set.simple_update(&gens, &mut rng).unwrap();
-        assert_eq!(set.t as u8, 11);
+        assert_eq!(set.t, 11);
         assert!(!set.has_key(10u128));
         assert!(set.has_key(12u128));
         assert!(set.has_key(13u128));
     }
+
+    #[test]
+    fn test_fast_forward_key_update_through_simple_key_update_7() {
+        // Create key and then fast forward update time
+
+        let mut rng = rand::thread_rng();
+        let T = 7;
+        let l = calculate_l(T).unwrap();
+
+        let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+        assert_eq!(set.t, 1);
+
+        // t=2
+        set.fast_forward_update(2u128, &gens, &mut rng).unwrap();
+        let sk_left = set.get_key(2u128).unwrap();
+        assert_eq!(sk_left.1.len() as u8, l);
+        let sk_right = set.get_key(5u128).unwrap();
+        assert_eq!(sk_right.1.len() as u8, l);
+        assert_eq!(set.t, 2);
+        assert!(!set.has_key(1u128));
+
+        // t=3
+        set.fast_forward_update(3u128, &gens, &mut rng).unwrap();
+        let sk_left = set.get_key(3u128).unwrap();
+        assert_eq!(sk_left.1.len() as u8, l - 1);
+        let sk_right = set.get_key(4u128).unwrap();
+        assert_eq!(sk_right.1.len() as u8, l - 1);
+        assert_eq!(set.t, 3);
+        assert!(!set.has_key(2u128));
+        assert!(set.has_key(5u128));
+
+        // t=4
+        set.fast_forward_update(4u128, &gens, &mut rng).unwrap();
+        assert_eq!(set.t, 4);
+        assert!(!set.has_key(3u128));
+        assert!(set.has_key(4u128));
+        assert!(set.has_key(5u128));
+
+        // t=5
+        set.fast_forward_update(5u128, &gens, &mut rng).unwrap();
+        assert_eq!(set.t, 5);
+        assert!(!set.has_key(4u128));
+
+        // t=6
+        set.fast_forward_update(6u128, &gens, &mut rng).unwrap();
+        assert_eq!(set.t, 6);
+        assert!(!set.has_key(5u128));
+        assert!(set.has_key(6u128));
+        assert!(set.has_key(7u128));
+
+        // t=7
+        set.fast_forward_update(7u128, &gens, &mut rng).unwrap();
+        assert_eq!(set.t, 7);
+        assert!(!set.has_key(6u128));
+        assert!(set.has_key(7u128));
+    }
+
+    #[test]
+    fn test_fast_forward_key_update_7() {
+        // Create key and then fast forward update
+
+        let mut rng = rand::thread_rng();
+        let T = 7;
+        let l = calculate_l(T).unwrap();
+
+        let mut t = 1u128;
+        {
+            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+            t = 3;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            assert!(set.has_key(4u128));
+            assert!(set.has_key(5u128));
+        }
+
+        {
+            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+            t = 4;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            assert!(set.has_key(4u128));
+            assert!(set.has_key(5u128));
+        }
+
+        {
+            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+            t = 5;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            assert!(set.has_key(5u128));
+        }
+
+        {
+            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+            t = 6;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            assert!(set.has_key(6u128));
+            assert!(set.has_key(7u128));
+        }
+    }
+
+    #[test]
+    fn test_fast_forward_key_update_repeat_7() {
+        // Create key and then fast forward update repeatedly
+
+        let mut rng = rand::thread_rng();
+        let T = 7;
+        let l = calculate_l(T).unwrap();
+        let mut t = 1u128;
+
+        {
+            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+            t = 2;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            assert!(set.has_key(5u128));
+
+            t = 4;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            assert!(set.has_key(5u128));
+
+            t = 6;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            assert!(set.has_key(6u128));
+            assert!(set.has_key(7u128));
+        }
+
+        {
+            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+            t = 3;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            assert!(set.has_key(4u128));
+            assert!(set.has_key(5u128));
+
+            t = 5;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+
+            t = 7;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+        }
+
+        {
+            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+            t = 4;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            assert!(set.has_key(5u128));
+
+            t = 7;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+        }
+    }
+
+    #[test]
+    fn test_fast_forward_key_update_15() {
+        // Create key and then fast forward update
+
+        let mut rng = rand::thread_rng();
+
+        let T = 15;
+        let l = calculate_l(T).unwrap();
+        let mut t = 1u128;
+
+        {
+            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+            t = 3;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            assert!(set.has_key(6u128));
+            assert!(set.has_key(9u128));
+
+            t = 5;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            assert!(set.has_key(6u128));
+            assert!(set.has_key(9u128));
+
+            t = 9;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+        }
+
+        {
+            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+            t = 4;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            assert!(set.has_key(5u128));
+            assert!(set.has_key(6u128));
+            assert!(set.has_key(9u128));
+
+            t = 10;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            assert!(set.has_key(13u128));
+
+            t = 13;
+            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+        }
+    }
+
+    // TODO: More tests with random values using node_successors function.
 }

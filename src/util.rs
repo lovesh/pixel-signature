@@ -3,6 +3,7 @@ use crate::setup::GeneratorSet;
 use crate::errors::PixelError;
 use amcl_wrapper::group_elem_g1::G1;
 
+// TODO: Abstract left and right in an enum with values 1 and 2 rather than using hardcoded 1 and 2.
 
 /// Takes max time period to be supported T. Returns l where 2^l - 1 = T.
 pub fn calculate_l(T: u128) -> Result<u8, PixelError> {
@@ -76,6 +77,32 @@ pub fn from_node_num_to_path(t: u128, l: u8) -> Result<Vec<u8>, PixelError> {
     }
 }
 
+/// Returns path of all successors of the node given by time t. Successors corresponds to the set
+/// containing all the right-hand siblings of nodes on the path from t to the root.
+/// The siblings are ordered from lowest number to highest.
+pub fn node_successor_paths(t: u128, l: u8) -> Result<Vec<Vec<u8>>, PixelError> {
+    if t > ((1 << l) - 1) as u128 {
+        return Err(PixelError::InvalidNodeNum {t, l})
+    }
+    if t == 1 {
+        return Ok(vec![])
+    } else {
+        let mut curr_path = vec![];
+        let mut successors = vec![];
+        let path = from_node_num_to_path(t, l)?;
+        for p in path {
+            if p == 1 {
+                let mut s = curr_path.clone();
+                s.push(2);
+                successors.push(s);
+            }
+            curr_path.push(p)
+        }
+        successors.reverse();
+        return Ok(successors);
+    }
+}
+
 /// Calculate h_0*h_1^path[0]*h_2^path[2]*......
 pub fn calculate_path_factor_using_t_l(t: u128, l:u8,
                                        gens: &GeneratorSet) -> Result<G1, PixelError> {
@@ -145,4 +172,54 @@ mod tests {
     }
 
     // TODO: Test to and from conversion of path and node number using randoms
+
+    #[test]
+    fn test_node_successors_7() {
+        let T = 7;
+        let l = calculate_l(T).unwrap();
+        let successors = node_successor_paths(1, l).unwrap();
+        assert!(successors.is_empty());
+        let successors = node_successor_paths(2, l).unwrap();
+        assert_eq!(successors, vec![vec![2]]);
+        let successors = node_successor_paths(3, l).unwrap();
+        assert_eq!(successors, vec![vec![1, 2], vec![2]]);
+        let successors = node_successor_paths(4, l).unwrap();
+        assert_eq!(successors, vec![vec![2]]);
+        let successors = node_successor_paths(5, l).unwrap();
+        assert!(successors.is_empty());
+        let successors = node_successor_paths(6, l).unwrap();
+        assert_eq!(successors, vec![vec![2, 2]]);
+        let successors = node_successor_paths(7, l).unwrap();
+        assert!(successors.is_empty());
+    }
+
+    #[test]
+    fn test_node_successors_15() {
+        let T = 15;
+        let l = calculate_l(T).unwrap();
+        let successors = node_successor_paths(1, l).unwrap();
+        assert!(successors.is_empty());
+        let successors = node_successor_paths(2, l).unwrap();
+        assert_eq!(successors, vec![vec![2]]);
+        let successors = node_successor_paths(3, l).unwrap();
+        assert_eq!(successors, vec![vec![1, 2], vec![2]]);
+        let successors = node_successor_paths(4, l).unwrap();
+        assert_eq!(successors, vec![vec![1, 1, 2], vec![1, 2], vec![2]]);
+        let successors = node_successor_paths(5, l).unwrap();
+        assert_eq!(successors, vec![vec![1, 2], vec![2]]);
+        let successors = node_successor_paths(6, l).unwrap();
+        assert_eq!(successors, vec![vec![2]]);
+        let successors = node_successor_paths(7, l).unwrap();
+        assert_eq!(successors, vec![vec![1, 2, 2], vec![2]]);
+        let successors = node_successor_paths(9, l).unwrap();
+        assert!(successors.is_empty());
+        let successors = node_successor_paths(10, l).unwrap();
+        assert_eq!(successors, vec![vec![2, 2]]);
+        let successors = node_successor_paths(11, l).unwrap();
+        assert_eq!(successors, vec![vec![2, 1, 2], vec![2, 2]]);
+        let successors = node_successor_paths(12, l).unwrap();
+        assert_eq!(successors, vec![vec![2, 2]]);
+        let successors = node_successor_paths(15, l).unwrap();
+        assert!(successors.is_empty());
+    }
 }
