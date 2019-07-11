@@ -35,6 +35,7 @@ pub struct AggregatedSignature {
     pub sigma_2: G2,
 }
 
+// TODO: Merge with signature and remove duplicate code
 impl AggregatedSignature {
     pub fn new(sigs: Vec<&Signature>) -> Self {
         let mut asig_1 = G1::identity();
@@ -61,6 +62,18 @@ impl AggregatedSignature {
         return false;
     }
 
+    pub fn has_correct_oder(&self) -> bool {
+        if !self.sigma_1.has_correct_order() {
+            println!("Signature point in G1 has incorrect order");
+            return false;
+        }
+        if !self.sigma_2.has_correct_order() {
+            println!("Signature point in G2 has incorrect order");
+            return false;
+        }
+        return true;
+    }
+
     pub fn verify(
         &self,
         msg: &[u8],
@@ -83,7 +96,7 @@ impl AggregatedSignature {
         avk: &AggregatedVerkey,
         gens: &GeneratorSet,
     ) -> Result<bool, PixelError> {
-        if self.is_identity() || avk.is_identity() {
+        if self.is_identity() || avk.is_identity() || !self.has_correct_oder() {
             return Ok(false);
         }
         if gens.1.len() < (l as usize + 2) {

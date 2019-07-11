@@ -65,7 +65,7 @@ impl Signature {
             return Err(PixelError::NotEnoughGenerators { n: l as usize + 2 });
         }
 
-        if self.is_identity() || verkey.is_identity() {
+        if self.is_identity() || verkey.is_identity() || !self.has_correct_oder() {
             return Ok(false);
         }
         Self::verify_naked(&self.sigma_1, &self.sigma_2, &verkey.value, msg, t, l, gens)
@@ -92,11 +92,19 @@ impl Signature {
         let m = Self::hash_message(msg);
         let mut sigma_1_1 = calculate_path_factor_using_t_l(t, l, gens)?;
         sigma_1_1 += &gens.1[l as usize + 1] * m;
-        let lhs = GT::ate_pairing(sigma_1, &g2);
+        /*let lhs = GT::ate_pairing(sigma_1, &g2);
         let rhs1 = GT::ate_pairing(h, y); // This can be pre-computed
         let rhs2 = GT::ate_pairing(&sigma_1_1, sigma_2);
         let rhs = GT::mul(&rhs1, &rhs2);
-        Ok(lhs == rhs)
+        Ok(lhs == rhs)*/
+
+        // Check that e(sigma_1, g2) == e(h, y) * e(sigma_1_1, sigma_2)
+        // This is equivalent to checking e(h, y) * e(sigma_1_1, sigma_2) * e(sigma_1, g2)^-1 == 1
+        // Which comes out to be e(h, y) * e(sigma_1_1, sigma_2) * e(sigma_1, -g2) == 1 which can put in a multi-pairing.
+        // -g2 can be precomputed if performance is critical
+        // Similarly it might be better to precompute e(h, y) and do a 2-pairing than a 3-pairing
+        let e = GT::ate_mutli_pairing(vec![(&sigma_1, &g2.negation()), (h, y), (&sigma_1_1, sigma_2)]);
+        Ok(e.is_one())
     }
 
     pub fn is_identity(&self) -> bool {
@@ -109,6 +117,18 @@ impl Signature {
             return true;
         }
         return false;
+    }
+
+    pub fn has_correct_oder(&self) -> bool {
+        if !self.sigma_1.has_correct_order() {
+            println!("Signature point in G1 has incorrect order");
+            return false;
+        }
+        if !self.sigma_2.has_correct_order() {
+            println!("Signature point in G2 has incorrect order");
+            return false;
+        }
+        return true;
     }
 }
 
