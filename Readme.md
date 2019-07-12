@@ -43,7 +43,7 @@ nodes 3, 6 and 9 (no need to derive key for node 2) and then remove key for node
 1. Call `Keypair::verify_pop` to verify proof of possession. 
 1. Call `Signature::new` to generate a signature on a message.
 1. Call `Signature::verify` to verify a signature.
-1. Call `AggregatedVerkey::new` to aggregate verkeys.
-1. Call `AggregatedSignature::new` to aggregate signatures.
-1. Call `AggregatedSignature::verify` to verify an aggregated signature by passing all verkeys.
-1. Call `AggregatedSignature::verify_using_aggr_vk` to verify aggregated signature if the verkey has already been aggregated.
+1. Call `Verkey::aggregate` to aggregate verkeys.
+1. Call `Signature::aggregate` to aggregate signatures.
+1. Call `Signature::verify_aggregated` to verify an aggregated signature by passing all verkeys.
+1. Call `Signature::verify` to verify aggregated signature if the verkey has already been aggregated.

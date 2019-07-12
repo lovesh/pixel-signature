@@ -7,7 +7,6 @@ extern crate error_chain;*/
 #[macro_use]
 extern crate failure;
 
-pub mod aggregate_signature;
 pub mod errors;
 pub mod keys;
 pub mod signature;

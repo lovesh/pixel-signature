@@ -47,6 +47,14 @@ impl Verkey {
         }
     }
 
+    pub fn aggregate(ver_keys: Vec<&Self>) -> Self {
+        let mut avk: G2 = G2::identity();
+        for vk in ver_keys {
+            avk += vk.value;
+        }
+        Self { value: avk }
+    }
+
     pub fn from_bytes(vk_bytes: &[u8]) -> Result<Verkey, SerzDeserzError> {
         G2::from_bytes(vk_bytes).map(|value| Verkey { value })
     }

@@ -11,6 +11,7 @@ use crate::keys::GeneratorSet;
 use crate::keys::{Sigkey, Verkey};
 use crate::util::{calculate_path_factor_using_t_l, from_node_num_to_path};
 
+#[derive(Clone, Debug)]
 pub struct Signature {
     pub sigma_1: G1,
     pub sigma_2: G2,
@@ -53,6 +54,19 @@ impl Signature {
         })
     }
 
+    pub fn aggregate(sigs: Vec<&Self>) -> Self {
+        let mut asig_1 = G1::identity();
+        let mut asig_2 = G2::identity();
+        for s in sigs {
+            asig_1 += s.sigma_1;
+            asig_2 += s.sigma_2;
+        }
+        Self {
+            sigma_1: asig_1,
+            sigma_2: asig_2,
+        }
+    }
+
     pub fn verify(
         &self,
         msg: &[u8],
@@ -69,6 +83,18 @@ impl Signature {
             return Ok(false);
         }
         Self::verify_naked(&self.sigma_1, &self.sigma_2, &verkey.value, msg, t, l, gens)
+    }
+
+    pub fn verify_aggregated(
+        &self,
+        msg: &[u8],
+        t: u128,
+        l: u8,
+        ver_keys: Vec<&Verkey>,
+        gens: &GeneratorSet,
+    ) -> Result<bool, PixelError> {
+        let avk = Verkey::aggregate(ver_keys);
+        self.verify(msg, t, l, gens, &avk)
     }
 
     /// Hash message in the field before signing or verification
@@ -135,7 +161,7 @@ impl Signature {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keys::{setup, SigkeySet};
+    use crate::keys::{setup, SigkeySet, Keypair};
     use crate::util::calculate_l;
     use rand::rngs::ThreadRng;
 
@@ -367,6 +393,64 @@ mod tests {
 
             t = 13;
             fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+        }
+    }
+
+    #[test]
+    fn test_aggr_sig_verify() {
+        let mut rng = rand::thread_rng();
+        let T = 7;
+        let l = calculate_l(T).unwrap();
+        let mut t = 1u128;
+
+        let (gens, vk1, mut sigkey_set1, _) =
+            setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+        let (keypair2, mut sigkey_set2) = Keypair::new(T, &gens, &mut rng).unwrap();
+        let vk2 = keypair2.ver_key;
+
+        create_sig_and_verify::<ThreadRng>(&sigkey_set1, t, &vk1, l, &gens, &mut rng);
+        create_sig_and_verify::<ThreadRng>(&sigkey_set2, t, &vk2, l, &gens, &mut rng);
+
+        {
+            let msg = "Hello".as_bytes();
+            let sk1 = sigkey_set1.get_key(t).unwrap();
+            let sig1 = Signature::new(msg, t, l, &gens, &sk1, &mut rng).unwrap();
+            let sk2 = sigkey_set2.get_key(t).unwrap();
+            let sig2 = Signature::new(msg, t, l, &gens, &sk2, &mut rng).unwrap();
+
+            let asig = Signature::aggregate(vec![&sig1, &sig2]);
+            assert!(asig.verify_aggregated(msg, t, l, vec![&vk1, &vk2], &gens).unwrap());
+        }
+
+        {
+            t = 3;
+            sigkey_set1.fast_forward_update(t, &gens, &mut rng).unwrap();
+            sigkey_set2.fast_forward_update(t, &gens, &mut rng).unwrap();
+
+            let msg = "Hello".as_bytes();
+            let sk1 = sigkey_set1.get_key(t).unwrap();
+            let sig1 = Signature::new(msg, t, l, &gens, &sk1, &mut rng).unwrap();
+            let sk2 = sigkey_set2.get_key(t).unwrap();
+            let sig2 = Signature::new(msg, t, l, &gens, &sk2, &mut rng).unwrap();
+
+            let asig = Signature::aggregate(vec![&sig1, &sig2]);
+            assert!(asig.verify_aggregated(msg, t, l, vec![&vk1, &vk2], &gens).unwrap());
+        }
+
+        {
+            t = 5;
+            sigkey_set1.fast_forward_update(t, &gens, &mut rng).unwrap();
+            sigkey_set2.fast_forward_update(t, &gens, &mut rng).unwrap();
+
+            let msg = "Hello".as_bytes();
+            let sk1 = sigkey_set1.get_key(t).unwrap();
+            let sig1 = Signature::new(msg, t, l, &gens, &sk1, &mut rng).unwrap();
+            let sk2 = sigkey_set2.get_key(t).unwrap();
+            let sig2 = Signature::new(msg, t, l, &gens, &sk2, &mut rng).unwrap();
+
+            let asig = Signature::aggregate(vec![&sig1, &sig2]);
+            assert!(asig.verify_aggregated(msg, t, l, vec![&vk1, &vk2], &gens).unwrap());
         }
     }
 }
