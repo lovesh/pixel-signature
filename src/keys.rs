@@ -255,9 +255,8 @@ impl SigkeySet {
             let node_num_right = path_to_node_num(&path_right, self.l)?;
 
             let r = FieldElement::random_using_rng(rng);
-            let f2 = FieldElement::from(2u32); // f2 = 2
-                                               // d * e_j^2
-            let mut sk_right_prime_prime = vec![d + (sk.1[1] * f2)];
+            // d * e_j^2
+            let mut sk_right_prime_prime = vec![d + (sk.1[1].double())];
             // h_0 * h_1^path[0] * h_2^path[1] * ... h_k^path[-1]
             let path_factor = calculate_path_factor(path_right, &gens)?;
             // d * e_j^2 * (h_0 * h_1^path[0] * h_2^path[1] * ... h_k^path[-1])^r
@@ -392,9 +391,6 @@ impl SigkeySet {
         gens: &GeneratorSet,
         rng: &mut R,
     ) -> Result<Sigkey, PixelError> {
-        // TODO: Move to lazy_static
-        let f1 = FieldElement::one(); // f1 = 1
-        let f2 = FieldElement::from(2u32); // f2 = 2
 
         let key_path_len = key_path.len();
         let r = FieldElement::random_using_rng(rng);
@@ -403,9 +399,9 @@ impl SigkeySet {
         let mut d: G1 = pred_sk.1[0].clone();
         for i in pred_sk_path_len..key_path_len {
             if key_path[i] == 1 {
-                d += pred_sk.1[i - pred_sk_path_len + 1] * &f1;
+                d += pred_sk.1[i - pred_sk_path_len + 1];
             } else {
-                d += pred_sk.1[i - pred_sk_path_len + 1] * &f2;
+                d += pred_sk.1[i - pred_sk_path_len + 1].double();
             }
         }
         let path_factor = calculate_path_factor(key_path.to_vec(), &gens)?;
@@ -445,6 +441,8 @@ pub fn setup<R: RngCore + CryptoRng>(
 mod tests {
     use super::*;
     use rand::rngs::ThreadRng;
+    // For benchmarking
+    use std::time::{Duration, Instant};
 
     fn fast_forward_and_check<R: RngCore + CryptoRng>(
         set: &mut SigkeySet,
@@ -826,5 +824,132 @@ mod tests {
         }
     }
 
+    #[test]
+    fn timing_simple_key_update_65535() {
+        // For tree with l=16, supports 2^16 - 1 = 65535 keys
+        let mut rng = rand::thread_rng();
+
+        let T = 65535;
+        let l = calculate_l(T).unwrap();
+
+        let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+        for i in 1..20 {
+            let start = Instant::now();
+            set.simple_update(&gens, &mut rng).unwrap();
+            println!("For l={}, time to update key from t={} to t={} is {:?}", l, i, i+1, start.elapsed());
+        }
+    }
+
+    #[test]
+    fn timing_simple_key_update_1048575() {
+        // For tree with l=20, supports 2^20 - 1 = 1048575 keys
+        let mut rng = rand::thread_rng();
+
+        let T = 1048575;
+        let l = calculate_l(T).unwrap();
+
+        let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+        for i in 1..40 {
+            let start = Instant::now();
+            set.simple_update(&gens, &mut rng).unwrap();
+            println!("For l={}, time to update key from t={} to t={} is {:?}", l, i, i+1, start.elapsed());
+        }
+    }
+
+    #[test]
+    fn timing_fast_forward_key_update_65535() {
+        // For tree with l=16, supports 2^16 - 1 = 65535 keys
+
+        let mut rng = rand::thread_rng();
+        let T = 65535;
+        let l = calculate_l(T).unwrap();
+
+        {
+            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+            let start = Instant::now();
+            set.fast_forward_update(3, &gens, &mut rng).unwrap();
+            println!("For l={}, time to update key from t=1 to t=3 is {:?}", l, start.elapsed());
+
+            let start = Instant::now();
+            set.fast_forward_update(15, &gens, &mut rng).unwrap();
+            println!("For l={}, time to update key from t=3 to t=15 is {:?}", l, start.elapsed());
+
+            let start = Instant::now();
+            set.fast_forward_update(35, &gens, &mut rng).unwrap();
+            println!("For l={}, time to update key from t=15 to t=35 is {:?}", l, start.elapsed());
+
+            let start = Instant::now();
+            set.fast_forward_update(10000, &gens, &mut rng).unwrap();
+            println!("For l={}, time to update key from t=35 to t=10000 is {:?}", l, start.elapsed());
+
+            let start = Instant::now();
+            set.fast_forward_update(30000, &gens, &mut rng).unwrap();
+            println!("For l={}, time to update key from t=10000 to t=30000 is {:?}", l, start.elapsed());
+
+            let start = Instant::now();
+            set.fast_forward_update(65535, &gens, &mut rng).unwrap();
+            println!("For l={}, time to update key from t=30000 to t=65535 is {:?}", l, start.elapsed());
+        }
+
+        {
+            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+            let start = Instant::now();
+            set.fast_forward_update(50000, &gens, &mut rng).unwrap();
+            println!("For l={}, time to update key from t=1 to t=50000 is {:?}", l, start.elapsed());
+
+            let start = Instant::now();
+            set.fast_forward_update(65535, &gens, &mut rng).unwrap();
+            println!("For l={}, time to update key from t=50000 to t=65535 is {:?}", l, start.elapsed());
+        }
+    }
+
+    #[test]
+    fn timing_fast_forward_key_update_1048575() {
+        // For tree with l=20, supports 2^20 - 1 = 1048575 keys
+        let mut rng = rand::thread_rng();
+
+        let T = 1048575;
+        let l = calculate_l(T).unwrap();
+
+        {
+            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+            let start = Instant::now();
+            set.fast_forward_update(3, &gens, &mut rng).unwrap();
+            println!("For l={}, time to update key from t=1 to t=3 is {:?}", l, start.elapsed());
+
+            let start = Instant::now();
+            set.fast_forward_update(19, &gens, &mut rng).unwrap();
+            println!("For l={}, time to update key from t=3 to t=19 is {:?}", l, start.elapsed());
+
+            let start = Instant::now();
+            set.fast_forward_update(4096, &gens, &mut rng).unwrap();
+            println!("For l={}, time to update key from t=19 to t=4096 is {:?}", l, start.elapsed());
+
+            let start = Instant::now();
+            set.fast_forward_update(1048550, &gens, &mut rng).unwrap();
+            println!("For l={}, time to update key from t=4096 to t=1048550 is {:?}", l, start.elapsed());
+        }
+
+        {
+            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+            let start = Instant::now();
+            set.fast_forward_update(19, &gens, &mut rng).unwrap();
+            println!("For l={}, time to update key from t=1 to t=19 is {:?}", l, start.elapsed());
+
+            let start = Instant::now();
+            set.fast_forward_update(65535, &gens, &mut rng).unwrap();
+            println!("For l={}, time to update key from t=19 to t=65535 is {:?}", l, start.elapsed());
+
+            let start = Instant::now();
+            set.fast_forward_update(1048575, &gens, &mut rng).unwrap();
+            println!("For l={}, time to update key from t=65535 to t=1048575 is {:?}", l, start.elapsed());
+        }
+    }
     // TODO: More tests with random values using node_successors function.
 }

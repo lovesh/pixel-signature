@@ -1,9 +1,9 @@
 use rand::{CryptoRng, RngCore};
 
 use amcl_wrapper::extension_field_gt::GT;
-use amcl_wrapper::field_elem::FieldElement;
+use amcl_wrapper::field_elem::{FieldElement, FieldElementVector};
 use amcl_wrapper::group_elem::{GroupElement, GroupElementVector};
-use amcl_wrapper::group_elem_g1::G1;
+use amcl_wrapper::group_elem_g1::{G1, G1Vector};
 use amcl_wrapper::group_elem_g2::G2;
 
 use crate::errors::PixelError;
@@ -121,16 +121,28 @@ impl Signature {
         // Hash(msg) -> FieldElement
         let m = Self::hash_message(msg);
 
-        let mut sigma_1 = d;
         // e_l
         let e_l: G1 = sig_key.1[sig_key.1.len() - 1].clone();
-        // sigma_1 += e_l^Hash(msg)
-        sigma_1 += &e_l * &m;
+        let pf = calculate_path_factor_using_t_l(t, l, gens)?;
 
-        let mut sigma_1_1 = calculate_path_factor_using_t_l(t, l, gens)?;
-        sigma_1_1 += &gens.1[l as usize + 1] * m;
-        sigma_1_1 = sigma_1_1 * r;
-        sigma_1 += sigma_1_1;
+        // sigma_1 = d + (e_l * &m) + (pf + (gens.1[l as usize + 1] * m))*r
+        let mut sigma_1 = d;
+        let mut points = G1Vector::with_capacity(3);
+        let mut scalars = FieldElementVector::with_capacity(3);
+
+        // (e_l * &m)
+        points.push(e_l);
+        scalars.push(m.clone());
+
+        // pf * r
+        points.push(pf);
+        scalars.push(*r);
+
+        // gens.1[l as usize + 1] * (m * r)
+        points.push(gens.1[l as usize + 1]);
+        scalars.push(m*r);
+
+        sigma_1 += points.multi_scalar_mul_const_time(&scalars).unwrap();
 
         let sigma_2 = c + (&gens.0 * r);
         Ok(Self {
@@ -200,6 +212,8 @@ mod tests {
     use crate::keys::{setup, SigkeySet, Keypair};
     use crate::util::calculate_l;
     use rand::rngs::ThreadRng;
+    // For benchmarking
+    use std::time::{Duration, Instant};
 
     pub fn create_sig_and_verify<R: RngCore + CryptoRng>(
         set: &SigkeySet,
@@ -435,18 +449,16 @@ mod tests {
         let l = calculate_l(T).unwrap();
         let mut t = 1u128;
 
-        {
-            let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+        let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
 
-            t = 2;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+        t = 2;
+        fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
 
-            t = 4;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+        t = 4;
+        fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
 
-            t = 6;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
-        }
+        t = 6;
+        fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
     }
 
     #[test]
@@ -479,6 +491,55 @@ mod tests {
             fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
 
             t = 13;
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+        }
+    }
+
+    #[test]
+    fn test_sig_verify_post_fast_forward_update_repeat_65535() {
+        let mut rng = rand::thread_rng();
+        let T = 65535;
+        let l = calculate_l(T).unwrap();
+        let mut t = 1u128;
+
+        {
+            let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+            t = 4;
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+
+            t = 15;
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+
+            t = 16;
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+
+            t = 32;
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+
+            t = 1024;
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+
+            t = 4095;
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+
+            t = 65535;
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+        }
+
+        {
+            let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+            t = 15;
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+
+            t = 1023;
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+
+            t = 8191;
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+
+            t = 16384;
             fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
         }
     }
@@ -538,6 +599,53 @@ mod tests {
 
             let asig = Signature::aggregate(vec![&sig1, &sig2]);
             assert!(asig.verify_aggregated(msg, t, l, vec![&vk1, &vk2], &gens).unwrap());
+        }
+    }
+
+    #[test]
+    fn timing_sig_verify_post_update_65535() {
+        // For tree with l=16, supports 2^16 - 1 = 65535 keys
+        // Benchmarking signature time with only simple update as fast forward update does not matter for signing.
+        let mut rng = rand::thread_rng();
+        let T = 65535;
+        let l = calculate_l(T).unwrap();
+        let msg = "Hello".as_bytes();
+
+        let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+        for t in 2..20 {
+            set.simple_update(&gens, &mut rng).unwrap();
+            let sk = set.get_key(t).unwrap();
+            let start = Instant::now();
+            let sig = Signature::new(msg, t, l, &gens, &sk, &mut rng).unwrap();
+            println!("For l={}, time to sign for t={} is {:?}", l, t, start.elapsed());
+            let start = Instant::now();
+            assert!(sig.verify(msg, t, l, &gens, &vk).unwrap());
+            println!("For l={}, time to verify for t={} is {:?}", l, t, start.elapsed());
+        }
+    }
+
+    #[test]
+    fn timing_sig_verify_post_update_1048575() {
+        // For tree with l=20, supports 2^20 - 1 = 1048575 keys
+        // Benchmarking signature time with only simple update as fast forward update does not matter for signing.
+
+        let mut rng = rand::thread_rng();
+        let T = 1048575;
+        let l = calculate_l(T).unwrap();
+        let msg = "Hello".as_bytes();
+
+        let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+
+        for t in 2..30 {
+            set.simple_update(&gens, &mut rng).unwrap();
+            let sk = set.get_key(t).unwrap();
+            let start = Instant::now();
+            let sig = Signature::new(msg, t, l, &gens, &sk, &mut rng).unwrap();
+            println!("For l={}, time to sign for t={} is {:?}", l, t, start.elapsed());
+            let start = Instant::now();
+            assert!(sig.verify(msg, t, l, &gens, &vk).unwrap());
+            println!("For l={}, time to verify for t={} is {:?}", l, t, start.elapsed());
         }
     }
 }

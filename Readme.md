@@ -41,9 +41,21 @@ nodes 3, 6 and 9 (no need to derive key for node 2) and then remove key for node
 1. Call the `GeneratorSet::new` function to create the required number of generators
 1. Once generators are created, call `Keypair::new` to create a new verification key, `SigkeySet` with key for t=1 and the proof of possession.
 1. Call `Keypair::verify_pop` to verify proof of possession. 
-1. Call `Signature::new` to generate a signature on a message.
+1. Call `Signature::new` to generate a in-deterministic signature on a message. This will lead to different signatures given the same secret key 
+and same time period each time this method is called.
+1. Call `Signature::new_deterministic` to generate a deterministic signature on a message. This will lead to the same signature given the same secret key 
+and same time period no matter how many times this method is called.
 1. Call `Signature::verify` to verify a signature.
 1. Call `Verkey::aggregate` to aggregate verkeys.
 1. Call `Signature::aggregate` to aggregate signatures.
 1. Call `Signature::verify_aggregated` to verify an aggregated signature by passing all verkeys.
 1. Call `Signature::verify` to verify aggregated signature if the verkey has already been aggregated.
+
+## Benchmarking
+There are tests which measure the time for signing and key update (both simple and fast forward). These 
+tests have names prefixed with `timing`. Those tests use either a height of 15 or 19 (l=16 or l=20), so 
+they support 65535 and 1048575 keys respectively. To run all of them, do
+```
+RUST_TEST_THREADS=1 cargo test --release -- --nocapture timing
+```
+This will time for various operations.

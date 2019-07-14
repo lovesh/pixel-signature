@@ -1,6 +1,7 @@
 use crate::errors::PixelError;
 use crate::keys::GeneratorSet;
 use amcl_wrapper::field_elem::FieldElement;
+use crate::amcl_wrapper::group_elem::GroupElement;
 use amcl_wrapper::group_elem_g1::G1;
 
 // TODO: Abstract left and right in an enum with values 1 and 2 rather than using hardcoded 1 and 2.
@@ -31,13 +32,13 @@ pub fn calculate_l(T: u128) -> Result<u8, PixelError> {
 /*
     // Note: This is different from paper as of 30/6/19. The formula in paper is incorrect.
 
-    If node is left child of parent then this node's number is 1 more than parent' node number
+    If node is left child of parent then this node's number is 1 more than parent's node number
     If node is right child of parent then this node's number is 1 + parent's node number + half of the number of children of the parent.
     A more verbose form of the code would ne
     if node is left_of(parent) {
         node_num(node) = 1 + node_num(parent)
     } else {
-        node_num(node) = 1 + node_num(parent) + (2^ (l - depth(node))) / 2
+        node_num(node) = 1 + node_num(parent) + (2^ (l - depth(node)) - 2) / 2
         node_num(node) = 1 + node_num(parent) + (2^ (l - depth(node) - 1))
     }
 */
@@ -51,8 +52,8 @@ pub fn path_to_node_num(path: &[u8], l: u8) -> Result<u128, PixelError> {
     }
     let mut t = 1u128;
     for i in 1..(path.len() + 1) {
-        // t += 1 + 2^{l-i-1} * (path[i-1]-1)
-        t += 1 + (((1 << (l - i as u8)) - 1) * (path[i - 1] - 1)) as u128;
+        // t += 1 + 2^{l-i} * (path[i-1]-1)
+        t += 1 + (((1 << (l - i as u8)) as u128 - 1) * (path[i - 1] - 1) as u128) as u128;
     }
     Ok(t)
 }
@@ -121,22 +122,19 @@ pub fn calculate_path_factor_using_t_l(
 
 /// Calculate h_0*h_1^path[0]*h_2^path[2]*......
 pub fn calculate_path_factor(path: Vec<u8>, gens: &GeneratorSet) -> Result<G1, PixelError> {
+    // TODO: Find better name for this function
+
     if gens.1.len() < (path.len() + 2) {
         return Err(PixelError::NotEnoughGenerators { n: path.len() + 2 });
     }
-    // TODO: Find better name for this function
     let mut sigma_1_1: G1 = gens.1[1].clone(); // h_0
-
-    // TODO: move them to lazy_static
-    let f1 = FieldElement::one(); // f1 = 1
-    let f2 = FieldElement::from(2u32); // f2 = 2
 
     // h_0*h_1^path[0]*h_2^path[2]*......
     for (i, p) in path.iter().enumerate() {
         if *p == 1 {
-            sigma_1_1 += &gens.1[2 + i] * &f1
+            sigma_1_1 += gens.1[2 + i]
         } else {
-            sigma_1_1 += &gens.1[2 + i] * &f2
+            sigma_1_1 += gens.1[2 + i].double()
         }
     }
 
