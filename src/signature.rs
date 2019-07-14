@@ -11,13 +11,14 @@ use crate::keys::GeneratorSet;
 use crate::keys::{Sigkey, Verkey};
 use crate::util::{calculate_path_factor_using_t_l, from_node_num_to_path};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Signature {
     pub sigma_1: G1,
     pub sigma_2: G2,
 }
 
 impl Signature {
+    /// Creates new in-deterministic signature
     pub fn new<R: RngCore + CryptoRng>(
         msg: &[u8],
         t: u128,
@@ -30,28 +31,23 @@ impl Signature {
             return Err(PixelError::NotEnoughGenerators { n: l as usize + 2 });
         }
 
-        let c: G2 = sig_key.0.clone();
-        let d: G1 = sig_key.1[0].clone();
         let r = FieldElement::random_using_rng(rng);
-        // Hash(msg) -> FieldElement
-        let m = Self::hash_message(msg);
+        Self::gen_sig(msg, t, l, gens, sig_key, &r)
+    }
 
-        let mut sigma_1 = d;
-        // e_l
-        let e_l: G1 = sig_key.1[sig_key.1.len() - 1].clone();
-        // sigma_1 += e_l^Hash(msg)
-        sigma_1 += &e_l * &m;
-
-        let mut sigma_1_1 = calculate_path_factor_using_t_l(t, l, gens)?;
-        sigma_1_1 += &gens.1[l as usize + 1] * m;
-        sigma_1_1 = sigma_1_1 * &r;
-        sigma_1 += sigma_1_1;
-
-        let sigma_2 = c + (&gens.0 * &r);
-        Ok(Self {
-            sigma_1: sigma_1.clone(),
-            sigma_2: sigma_2.clone(),
-        })
+    /// Creates new deterministic signature. Signature for same message and secret key will be equal
+    pub fn new_deterministic(
+        msg: &[u8],
+        t: u128,
+        l: u8,
+        gens: &GeneratorSet,
+        sig_key: &Sigkey,
+    ) -> Result<Self, PixelError> {
+        if gens.1.len() < (l as usize + 2) {
+            return Err(PixelError::NotEnoughGenerators { n: l as usize + 2 });
+        }
+        let r = Self::gen_sig_rand(msg, sig_key);
+        Self::gen_sig(msg, t, l, gens, sig_key, &r)
     }
 
     pub fn aggregate(sigs: Vec<&Self>) -> Self {
@@ -98,12 +94,52 @@ impl Signature {
     }
 
     /// Hash message in the field before signing or verification
-    pub fn hash_message(message: &[u8]) -> FieldElement {
+    fn hash_message(message: &[u8]) -> FieldElement {
         // Fixme: This is not accurate and might affect the security proof but should work in practice
         FieldElement::from_msg_hash(message)
     }
 
-    pub fn verify_naked(
+    /// Generate random number for signature using message and signing key for that time period.
+    fn gen_sig_rand(message: &[u8], sig_key: &Sigkey) -> FieldElement {
+        let mut bytes = message.to_vec();
+        bytes.extend_from_slice(&sig_key.0.to_bytes());
+        for i in &sig_key.1 {
+            bytes.extend_from_slice(&i.to_bytes());
+        }
+        FieldElement::from_msg_hash(&bytes)
+    }
+
+    fn gen_sig(msg: &[u8],
+               t: u128,
+               l: u8,
+               gens: &GeneratorSet,
+               sig_key: &Sigkey,
+               r: &FieldElement) ->  Result<Self, PixelError> {
+        let c: G2 = sig_key.0.clone();
+        let d: G1 = sig_key.1[0].clone();
+
+        // Hash(msg) -> FieldElement
+        let m = Self::hash_message(msg);
+
+        let mut sigma_1 = d;
+        // e_l
+        let e_l: G1 = sig_key.1[sig_key.1.len() - 1].clone();
+        // sigma_1 += e_l^Hash(msg)
+        sigma_1 += &e_l * &m;
+
+        let mut sigma_1_1 = calculate_path_factor_using_t_l(t, l, gens)?;
+        sigma_1_1 += &gens.1[l as usize + 1] * m;
+        sigma_1_1 = sigma_1_1 * r;
+        sigma_1 += sigma_1_1;
+
+        let sigma_2 = c + (&gens.0 * r);
+        Ok(Self {
+            sigma_1: sigma_1.clone(),
+            sigma_2: sigma_2.clone(),
+        })
+    }
+
+    fn verify_naked(
         sigma_1: &G1,
         sigma_2: &G2,
         verkey: &G2,
@@ -133,7 +169,7 @@ impl Signature {
         Ok(e.is_one())
     }
 
-    pub fn is_identity(&self) -> bool {
+    fn is_identity(&self) -> bool {
         if self.sigma_1.is_identity() {
             println!("Signature point in G1 at infinity");
             return true;
@@ -145,7 +181,7 @@ impl Signature {
         return false;
     }
 
-    pub fn has_correct_oder(&self) -> bool {
+    fn has_correct_oder(&self) -> bool {
         if !self.sigma_1.has_correct_order() {
             println!("Signature point in G1 has incorrect order");
             return false;
@@ -199,6 +235,57 @@ mod tests {
         let (gens, vk, set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
         let t = 1u128;
         create_sig_and_verify::<ThreadRng>(&set, t, &vk, l, &gens, &mut rng);
+    }
+
+    #[test]
+    fn test_sig_deterministic() {
+        let mut rng = rand::thread_rng();
+        let T = 7;
+        let l = calculate_l(T).unwrap();
+        let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+        let t1 = 1u128;
+        let msg = "Hello".as_bytes();
+        let sk1 = set.get_key(t1).unwrap();
+
+        // In-deterministic and deterministic signatures for t=1
+
+        let sig1 = Signature::new(msg, t1, l, &gens, &sk1, &mut rng).unwrap();
+        let sig1_deterministic = Signature::new_deterministic(msg, t1, l, &gens, &sk1).unwrap();
+        // In-deterministic sigs should verify
+        assert!(sig1.verify(msg, t1, l, &gens, &vk).unwrap());
+        assert!(sig1_deterministic.verify(msg, t1, l, &gens, &vk).unwrap());
+
+        let sig2 = Signature::new(msg, t1, l, &gens, &sk1, &mut rng).unwrap();
+        let sig2_deterministic = Signature::new_deterministic(msg, t1, l, &gens, &sk1).unwrap();
+        // Deterministic sigs should verify
+        assert!(sig2.verify(msg, t1, l, &gens, &vk).unwrap());
+        assert!(sig2_deterministic.verify(msg, t1, l, &gens, &vk).unwrap());
+
+        // Deterministic sigs for same message and secret key should be equal
+        assert_eq!(sig1_deterministic, sig2_deterministic);
+        // In-deterministic sigs for same message and secret key should be different
+        assert_ne!(sig1, sig2);
+
+        // In-deterministic and deterministic signatures for t=2, doing the same checks as above
+        let t2 = 2u128;
+        set.simple_update(&gens, &mut rng).unwrap();
+        let sk2 = set.get_key(t2).unwrap();
+
+        let sig3 = Signature::new(msg, t2, l, &gens, &sk2, &mut rng).unwrap();
+        let sig3_deterministic = Signature::new_deterministic(msg, t2, l, &gens, &sk2).unwrap();
+        assert!(sig3.verify(msg, t2, l, &gens, &vk).unwrap());
+        assert!(sig3_deterministic.verify(msg, t2, l, &gens, &vk).unwrap());
+
+        let sig4 = Signature::new(msg, t2, l, &gens, &sk2, &mut rng).unwrap();
+        let sig4_deterministic = Signature::new_deterministic(msg, t2, l, &gens, &sk2).unwrap();
+        assert!(sig4.verify(msg, t2, l, &gens, &vk).unwrap());
+        assert!(sig4_deterministic.verify(msg, t2, l, &gens, &vk).unwrap());
+
+        assert_eq!(sig3_deterministic, sig4_deterministic);
+        assert_ne!(sig3, sig4);
+
+        // deterministic signatures for different secret keys should differ
+        assert_ne!(sig1_deterministic, sig3_deterministic);
     }
 
     #[test]
