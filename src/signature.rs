@@ -3,7 +3,7 @@ use rand::{CryptoRng, RngCore};
 use amcl_wrapper::extension_field_gt::GT;
 use amcl_wrapper::field_elem::{FieldElement, FieldElementVector};
 use amcl_wrapper::group_elem::{GroupElement, GroupElementVector};
-use amcl_wrapper::group_elem_g1::{G1, G1Vector};
+use amcl_wrapper::group_elem_g1::{G1Vector, G1};
 use amcl_wrapper::group_elem_g2::G2;
 
 use crate::errors::PixelError;
@@ -108,12 +108,14 @@ impl Signature {
         FieldElement::from_msg_hash(&bytes)
     }
 
-    fn gen_sig(msg: &[u8],
-               t: u128,
-               l: u8,
-               gens: &GeneratorSet,
-               sig_key: &Sigkey,
-               r: FieldElement) ->  Result<Self, PixelError> {
+    fn gen_sig(
+        msg: &[u8],
+        t: u128,
+        l: u8,
+        gens: &GeneratorSet,
+        sig_key: &Sigkey,
+        r: FieldElement,
+    ) -> Result<Self, PixelError> {
         let c: G2 = sig_key.0.clone();
         let d: G1 = sig_key.1[0].clone();
 
@@ -166,18 +168,17 @@ impl Signature {
         let m = Self::hash_message(msg);
         let mut sigma_1_1 = calculate_path_factor_using_t_l(t, l, gens)?;
         sigma_1_1 += &gens.1[l as usize + 1] * m;
-        /*let lhs = GT::ate_pairing(sigma_1, &g2);
-        let rhs1 = GT::ate_pairing(h, y); // This can be pre-computed
-        let rhs2 = GT::ate_pairing(&sigma_1_1, sigma_2);
-        let rhs = GT::mul(&rhs1, &rhs2);
-        Ok(lhs == rhs)*/
 
         // Check that e(sigma_1, g2) == e(h, y) * e(sigma_1_1, sigma_2)
         // This is equivalent to checking e(h, y) * e(sigma_1_1, sigma_2) * e(sigma_1, g2)^-1 == 1
         // Which comes out to be e(h, y) * e(sigma_1_1, sigma_2) * e(sigma_1, -g2) == 1 which can put in a multi-pairing.
         // -g2 can be precomputed if performance is critical
         // Similarly it might be better to precompute e(h, y) and do a 2-pairing than a 3-pairing
-        let e = GT::ate_multi_pairing(vec![(&sigma_1, &g2.negation()), (h, y), (&sigma_1_1, sigma_2)]);
+        let e = GT::ate_multi_pairing(vec![
+            (&sigma_1, &g2.negation()),
+            (h, y),
+            (&sigma_1_1, sigma_2),
+        ]);
         Ok(e.is_one())
     }
 
@@ -209,14 +210,14 @@ impl Signature {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keys::{setup, SigkeySet, Keypair};
+    use crate::keys::{setup, InMemorySigKeyDb, Keypair, SigkeyManager};
     use crate::util::calculate_l;
     use rand::rngs::ThreadRng;
     // For benchmarking
     use std::time::{Duration, Instant};
 
     pub fn create_sig_and_verify<R: RngCore + CryptoRng>(
-        set: &SigkeySet,
+        set: &SigkeyManager,
         t: u128,
         vk: &Verkey,
         l: u8,
@@ -230,7 +231,7 @@ mod tests {
     }
 
     fn fast_forward_sig_and_verify<R: RngCore + CryptoRng>(
-        set: &mut SigkeySet,
+        set: &mut SigkeyManager,
         t: u128,
         vk: &Verkey,
         l: u8,
@@ -246,7 +247,8 @@ mod tests {
         let mut rng = rand::thread_rng();
         let T = 7;
         let l = calculate_l(T).unwrap();
-        let (gens, vk, set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+        let mut db = InMemorySigKeyDb::new();
+        let (gens, vk, set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
         let t = 1u128;
         create_sig_and_verify::<ThreadRng>(&set, t, &vk, l, &gens, &mut rng);
     }
@@ -256,7 +258,9 @@ mod tests {
         let mut rng = rand::thread_rng();
         let T = 7;
         let l = calculate_l(T).unwrap();
-        let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+        let mut db = InMemorySigKeyDb::new();
+        let (gens, vk, mut set, _) =
+            setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
         let t1 = 1u128;
         let msg = "Hello".as_bytes();
         let sk1 = set.get_key(t1).unwrap();
@@ -307,7 +311,9 @@ mod tests {
         let mut rng = rand::thread_rng();
         let T = 7;
         let l = calculate_l(T).unwrap();
-        let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+        let mut db = InMemorySigKeyDb::new();
+        let (gens, vk, mut set, _) =
+            setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
         // t=2
         set.simple_update(&gens, &mut rng).unwrap();
@@ -343,7 +349,9 @@ mod tests {
         let mut rng = rand::thread_rng();
         let T = 15;
         let l = calculate_l(T).unwrap();
-        let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+        let mut db = InMemorySigKeyDb::new();
+        let (gens, vk, mut set, _) =
+            setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
         // t=2
         set.simple_update(&gens, &mut rng).unwrap();
@@ -407,35 +415,45 @@ mod tests {
         let mut t = 1u128;
 
         {
-            let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, vk, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 3;
             fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
         }
 
         {
-            let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, vk, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 4;
             fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
         }
 
         {
-            let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, vk, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 5;
             fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
         }
 
         {
-            let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, vk, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 6;
             fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
         }
 
         {
-            let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, vk, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 7;
             fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
@@ -448,8 +466,9 @@ mod tests {
         let T = 7;
         let l = calculate_l(T).unwrap();
         let mut t = 1u128;
-
-        let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+        let mut db = InMemorySigKeyDb::new();
+        let (gens, vk, mut set, _) =
+            setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
         t = 2;
         fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
@@ -469,7 +488,9 @@ mod tests {
         let mut t = 1u128;
 
         {
-            let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, vk, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 3;
             fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
@@ -482,7 +503,9 @@ mod tests {
         }
 
         {
-            let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, vk, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 6;
             fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
@@ -503,7 +526,9 @@ mod tests {
         let mut t = 1u128;
 
         {
-            let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, vk, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 4;
             fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
@@ -528,7 +553,9 @@ mod tests {
         }
 
         {
-            let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, vk, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 15;
             fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
@@ -551,10 +578,12 @@ mod tests {
         let l = calculate_l(T).unwrap();
         let mut t = 1u128;
 
+        let mut db1 = InMemorySigKeyDb::new();
         let (gens, vk1, mut sigkey_set1, _) =
-            setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db1).unwrap();
 
-        let (keypair2, mut sigkey_set2) = Keypair::new(T, &gens, &mut rng).unwrap();
+        let mut db2 = InMemorySigKeyDb::new();
+        let (keypair2, mut sigkey_set2) = Keypair::new(T, &gens, &mut rng, &mut db2).unwrap();
         let vk2 = keypair2.ver_key;
 
         create_sig_and_verify::<ThreadRng>(&sigkey_set1, t, &vk1, l, &gens, &mut rng);
@@ -568,7 +597,9 @@ mod tests {
             let sig2 = Signature::new(msg, t, l, &gens, &sk2, &mut rng).unwrap();
 
             let asig = Signature::aggregate(vec![&sig1, &sig2]);
-            assert!(asig.verify_aggregated(msg, t, l, vec![&vk1, &vk2], &gens).unwrap());
+            assert!(asig
+                .verify_aggregated(msg, t, l, vec![&vk1, &vk2], &gens)
+                .unwrap());
         }
 
         {
@@ -583,7 +614,9 @@ mod tests {
             let sig2 = Signature::new(msg, t, l, &gens, &sk2, &mut rng).unwrap();
 
             let asig = Signature::aggregate(vec![&sig1, &sig2]);
-            assert!(asig.verify_aggregated(msg, t, l, vec![&vk1, &vk2], &gens).unwrap());
+            assert!(asig
+                .verify_aggregated(msg, t, l, vec![&vk1, &vk2], &gens)
+                .unwrap());
         }
 
         {
@@ -598,7 +631,9 @@ mod tests {
             let sig2 = Signature::new(msg, t, l, &gens, &sk2, &mut rng).unwrap();
 
             let asig = Signature::aggregate(vec![&sig1, &sig2]);
-            assert!(asig.verify_aggregated(msg, t, l, vec![&vk1, &vk2], &gens).unwrap());
+            assert!(asig
+                .verify_aggregated(msg, t, l, vec![&vk1, &vk2], &gens)
+                .unwrap());
         }
     }
 
@@ -610,18 +645,29 @@ mod tests {
         let T = 65535;
         let l = calculate_l(T).unwrap();
         let msg = "Hello".as_bytes();
-
-        let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+        let mut db = InMemorySigKeyDb::new();
+        let (gens, vk, mut set, _) =
+            setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
         for t in 2..20 {
             set.simple_update(&gens, &mut rng).unwrap();
             let sk = set.get_key(t).unwrap();
             let start = Instant::now();
             let sig = Signature::new(msg, t, l, &gens, &sk, &mut rng).unwrap();
-            println!("For l={}, time to sign for t={} is {:?}", l, t, start.elapsed());
+            println!(
+                "For l={}, time to sign for t={} is {:?}",
+                l,
+                t,
+                start.elapsed()
+            );
             let start = Instant::now();
             assert!(sig.verify(msg, t, l, &gens, &vk).unwrap());
-            println!("For l={}, time to verify for t={} is {:?}", l, t, start.elapsed());
+            println!(
+                "For l={}, time to verify for t={} is {:?}",
+                l,
+                t,
+                start.elapsed()
+            );
         }
     }
 
@@ -634,18 +680,29 @@ mod tests {
         let T = 1048575;
         let l = calculate_l(T).unwrap();
         let msg = "Hello".as_bytes();
-
-        let (gens, vk, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+        let mut db = InMemorySigKeyDb::new();
+        let (gens, vk, mut set, _) =
+            setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
         for t in 2..30 {
             set.simple_update(&gens, &mut rng).unwrap();
             let sk = set.get_key(t).unwrap();
             let start = Instant::now();
             let sig = Signature::new(msg, t, l, &gens, &sk, &mut rng).unwrap();
-            println!("For l={}, time to sign for t={} is {:?}", l, t, start.elapsed());
+            println!(
+                "For l={}, time to sign for t={} is {:?}",
+                l,
+                t,
+                start.elapsed()
+            );
             let start = Instant::now();
             assert!(sig.verify(msg, t, l, &gens, &vk).unwrap());
-            println!("For l={}, time to verify for t={} is {:?}", l, t, start.elapsed());
+            println!(
+                "For l={}, time to verify for t={} is {:?}",
+                l,
+                t,
+                start.elapsed()
+            );
         }
     }
 }

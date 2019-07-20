@@ -16,4 +16,4 @@ pub mod signature;
 pub mod util;
 
 // TODO: Add a high level object that orchestrates key update and signing. Like if the signing has to
-// be done for t=x and current time in SigkeySet is y<x, it should update time to t=x.
+// be done for t=x and current time in SigkeyManager is y<x, it should update time to t=x.

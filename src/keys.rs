@@ -1,5 +1,5 @@
-use rand::{CryptoRng, RngCore};
 use clear_on_drop::clear::Clear;
+use rand::{CryptoRng, RngCore};
 
 use amcl_wrapper::errors::SerzDeserzError;
 use amcl_wrapper::field_elem::FieldElement;
@@ -8,7 +8,10 @@ use amcl_wrapper::group_elem_g1::G1;
 use amcl_wrapper::group_elem_g2::G2;
 
 use super::errors::PixelError;
-use crate::util::{calculate_l, calculate_path_factor, from_node_num_to_path, node_successor_paths, path_to_node_num, GeneratorSet};
+use crate::util::{
+    calculate_l, calculate_path_factor, from_node_num_to_path, node_successor_paths,
+    path_to_node_num, GeneratorSet,
+};
 use amcl_wrapper::extension_field_gt::GT;
 use std::collections::{HashMap, HashSet};
 use std::mem;
@@ -88,21 +91,19 @@ pub struct ProofOfPossession {
 /// Keypair consisting of a master secret, the corresponding verkey and the proof of possession
 /// Type GPrime denotes group for public key and type G denotes group for proof of possession.
 pub struct Keypair {
-    // Fixme: The master secret does not need to be persisted once the initial signing keys and PoP has been generated.
-    // Seems like a bad idea to make it part of struct.
-    pub master_secret: MasterSecret,
     pub ver_key: Verkey,
     pub pop: ProofOfPossession,
 }
 
 const PrefixPoP: &[u8] = b"PoP";
 
-impl Keypair {
+impl<'a> Keypair {
     pub fn new<R: RngCore + CryptoRng>(
         T: u128,
         generators: &GeneratorSet,
         rng: &mut R,
-    ) -> Result<(Self, SigkeySet), PixelError> {
+        db: &'a mut SigKeyDb,
+    ) -> Result<(Self, SigkeyManager<'a>), PixelError> {
         let master_secret = MasterSecret::new(rng);
         let ver_key = Verkey::from_master_secret(&master_secret, &generators.0);
         let pop = Self::gen_pop(&ver_key, &master_secret);
@@ -112,14 +113,11 @@ impl Keypair {
             &master_secret,
             rng,
         )?;
+        mem::drop(master_secret);
         let l = calculate_l(T)?;
-        let sigkey_set = SigkeySet::new(T, l, sigkey_initial)?;
-        let kp = Self {
-            master_secret,
-            ver_key,
-            pop,
-        };
-        Ok((kp, sigkey_set))
+        let sigkeys = SigkeyManager::new(T, l, sigkey_initial, db)?;
+        let kp = Self { ver_key, pop };
+        Ok((kp, sigkeys))
     }
 
     /// Generate proof of possession
@@ -183,34 +181,34 @@ impl Sigkey {
 /// keys is a hashmap with the hashmap key as the time period for which the key needs to be used.
 /// The hashmap will get new entries and remove old entries as time passes. `t` denotes the current time period.
 /// This data-structure is to be kept secret.
-pub struct SigkeySet {
+pub struct SigkeyManager<'a> {
     l: u8,
     T: u128,
     t: u128,
-    keys: HashMap<u128, Sigkey>,
+    db: &'a mut SigKeyDb,
 }
 
-impl SigkeySet {
-    pub fn new(T: u128, l: u8, sigkey: Sigkey) -> Result<Self, PixelError> {
-        let mut keys = HashMap::<u128, Sigkey>::new();
+impl<'a> SigkeyManager<'a> {
+    pub fn new(T: u128, l: u8, sigkey: Sigkey, db: &'a mut SigKeyDb) -> Result<Self, PixelError> {
         let t = 1;
-        keys.insert(t.clone(), sigkey);
-        Ok(Self { l, T, t, keys })
+        db.insert_key(t.clone(), sigkey);
+        Ok(Self { l, T, t, db })
+    }
+
+    pub fn load(T: u128, l: u8, t: u128, db: &'a mut SigKeyDb) -> Result<Self, PixelError> {
+        Ok(Self { l, T, t, db })
     }
 
     pub fn has_key(&self, t: u128) -> bool {
-        self.keys.contains_key(&t)
+        self.db.has_key(t)
     }
 
     pub fn get_key(&self, t: u128) -> Result<&Sigkey, PixelError> {
-        match self.keys.get(&t) {
-            Some(key) => Ok(key),
-            None => Err(PixelError::SigkeyNotFound { t }),
-        }
+        self.db.get_key(t)
     }
 
     pub fn get_current_key(&self) -> Result<&Sigkey, PixelError> {
-        self.get_key(self.t)
+        self.db.get_key(self.t)
     }
 
     /// Update time by 1
@@ -218,7 +216,7 @@ impl SigkeySet {
         &mut self,
         gens: &GeneratorSet,
         rng: &mut R,
-    ) -> Result<(), PixelError> {
+    ) -> Result<u128, PixelError> {
         let path = from_node_num_to_path(self.t, self.l)?;
         let path_len = path.len();
         let sk = self.get_current_key()?;
@@ -259,8 +257,9 @@ impl SigkeySet {
             }
 
             // Update the set with keys for both children and remove key corresponding to current time period
-            self.keys.insert(self.t + 1, Sigkey(c.clone(), sk_left_prime_prime));
-            self.keys.insert(
+            self.db
+                .insert_key(self.t + 1, Sigkey(c.clone(), sk_left_prime_prime));
+            self.db.insert_key(
                 node_num_right,
                 Sigkey(&c + (&gens.0 * &r), sk_right_prime_prime),
             );
@@ -271,10 +270,8 @@ impl SigkeySet {
             removed_key_idx = self.t.clone();
             self.t = self.t + 1;
         }
-        let old = self.keys.remove(&removed_key_idx);
-        debug_assert!(old.is_some());
-        mem::drop(old.unwrap());
-        Ok(())
+        self.db.remove_key(removed_key_idx);
+        Ok(removed_key_idx)
     }
 
     /// Update time to given `t`
@@ -283,7 +280,7 @@ impl SigkeySet {
         t: u128,
         gens: &GeneratorSet,
         rng: &mut R,
-    ) -> Result<(), PixelError> {
+    ) -> Result<Vec<u128>, PixelError> {
         if t > ((1 << self.l) - 1) as u128 {
             return Err(PixelError::InvalidNodeNum { t, l: self.l });
         }
@@ -300,7 +297,8 @@ impl SigkeySet {
 
         if (t - self.t) == 1 {
             // Simple update is more efficient
-            return self.simple_update(gens, rng);
+            let removed = self.simple_update(gens, rng)?;
+            return Ok(vec![removed]);
         }
 
         // Find key for t and all of t's successors
@@ -353,13 +351,14 @@ impl SigkeySet {
                 };
 
                 for (i, k) in keys {
-                    self.keys.insert(i, k);
+                    //self.keys.insert(i, k);
+                    self.db.insert_key(i, k);
                 }
             }
         };
 
         // Remove all nodes except successors and the node for time t.
-        let all_key_node_nums: HashSet<_> = self.keys.keys().map(|k| *k).collect();
+        let all_key_node_nums: HashSet<_> = self.db.get_key_indices();
         // Keep successors
         let mut node_num_to_keep: HashSet<u128> = successor_paths
             .iter()
@@ -369,13 +368,13 @@ impl SigkeySet {
         node_num_to_keep.insert(t);
         // Remove all others
         let nodes_to_remove = all_key_node_nums.difference(&node_num_to_keep);
+        let mut removed = vec![];
         for n in nodes_to_remove {
-            let old = self.keys.remove(n);
-            debug_assert!(old.is_some());
-            mem::drop(old.unwrap());
+            self.db.remove_key(*n);
+            removed.push(n.clone())
         }
         self.t = t;
-        Ok(())
+        Ok(removed)
     }
 
     /// Derive signing key denoted by path `key_path` using its predecessor node's signing key `pred_sk`
@@ -387,7 +386,6 @@ impl SigkeySet {
         gens: &GeneratorSet,
         rng: &mut R,
     ) -> Result<Sigkey, PixelError> {
-
         let key_path_len = key_path.len();
         let r = FieldElement::random_using_rng(rng);
 
@@ -432,7 +430,7 @@ pub trait SigKeyDb {
     fn get_key(&self, t: u128) -> Result<&Sigkey, PixelError>;
 
     /// Returns indices (time periods) for all present keys
-    fn key_indices(&self) -> HashSet<u128>;
+    fn get_key_indices(&self) -> HashSet<u128>;
 }
 
 pub struct InMemorySigKeyDb {
@@ -461,7 +459,7 @@ impl SigKeyDb for InMemorySigKeyDb {
         }
     }
 
-    fn key_indices(&self) -> HashSet<u128> {
+    fn get_key_indices(&self) -> HashSet<u128> {
         self.keys.keys().map(|k| *k).collect()
     }
 }
@@ -473,16 +471,17 @@ impl InMemorySigKeyDb {
     }
 }
 
-/// Create master secret, verkey, PoP, SigkeySet for t = 1, a set with only 1 key and proof of possession.
+/// Create master secret, verkey, PoP, SigkeyManager for t = 1, a set with only 1 key and proof of possession.
 #[cfg(test)]
-pub fn setup<R: RngCore + CryptoRng>(
+pub fn setup<'a, R: RngCore + CryptoRng>(
     T: u128,
     prefix: &str,
     rng: &mut R,
-) -> Result<(GeneratorSet, Verkey, SigkeySet, ProofOfPossession), PixelError> {
+    db: &'a mut SigKeyDb,
+) -> Result<(GeneratorSet, Verkey, SigkeyManager<'a>, ProofOfPossession), PixelError> {
     let generators = GeneratorSet::new(T, prefix)?;
-    let (keypair, sigkey_set) = Keypair::new(T, &generators, rng)?;
-    Ok((generators, keypair.ver_key, sigkey_set, keypair.pop))
+    let (keypair, sigkeys) = Keypair::new(T, &generators, rng, db)?;
+    Ok((generators, keypair.ver_key, sigkeys, keypair.pop))
 }
 
 #[cfg(test)]
@@ -493,7 +492,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn fast_forward_and_check<R: RngCore + CryptoRng>(
-        set: &mut SigkeySet,
+        set: &mut SigkeyManager,
         t: u128,
         gens: &GeneratorSet,
         mut rng: &mut R,
@@ -510,7 +509,9 @@ mod tests {
     fn test_proof_of_possession() {
         let mut rng = rand::thread_rng();
         let T1 = 7;
-        let (gens, verkey, _, PoP) = setup::<ThreadRng>(T1, "test_pixel", &mut rng).unwrap();
+        let mut db = InMemorySigKeyDb::new();
+        let (gens, verkey, _, PoP) =
+            setup::<ThreadRng>(T1, "test_pixel", &mut rng, &mut db).unwrap();
         assert!(Keypair::verify_pop(&PoP, &verkey, &gens.0))
     }
 
@@ -519,10 +520,11 @@ mod tests {
         let mut rng = rand::thread_rng();
         let T = 7;
         let generators = GeneratorSet::new(T, "test_pixel").unwrap();
-        assert!(Keypair::new(3, &generators, &mut rng).is_ok());
-        assert!(Keypair::new(7, &generators, &mut rng).is_ok());
-        assert!(Keypair::new(8, &generators, &mut rng).is_err());
-        assert!(Keypair::new(9, &generators, &mut rng).is_err());
+        let mut db = InMemorySigKeyDb::new();
+        assert!(Keypair::new(3, &generators, &mut rng, &mut db).is_ok());
+        assert!(Keypair::new(7, &generators, &mut rng, &mut db).is_ok());
+        assert!(Keypair::new(8, &generators, &mut rng, &mut db).is_err());
+        assert!(Keypair::new(9, &generators, &mut rng, &mut db).is_err());
     }
 
     #[test]
@@ -530,13 +532,15 @@ mod tests {
         let mut rng = rand::thread_rng();
         let T1 = 7;
         let l1 = calculate_l(T1).unwrap();
-        let (_, _, set1, _) = setup::<ThreadRng>(T1, "test_pixel", &mut rng).unwrap();
+        let mut db1 = InMemorySigKeyDb::new();
+        let (_, _, set1, _) = setup::<ThreadRng>(T1, "test_pixel", &mut rng, &mut db1).unwrap();
         let sk1 = set1.get_key(1u128).unwrap();
         assert_eq!(sk1.1.len() as u8, l1 + 1);
 
         let T2 = 15;
         let l2 = calculate_l(T2).unwrap();
-        let (_, _, set2, _) = setup::<ThreadRng>(T2, "test_pixel", &mut rng).unwrap();
+        let mut db2 = InMemorySigKeyDb::new();
+        let (_, _, set2, _) = setup::<ThreadRng>(T2, "test_pixel", &mut rng, &mut db2).unwrap();
         let sk2 = set2.get_key(1u128).unwrap();
         assert_eq!(sk2.1.len() as u8, l2 + 1);
     }
@@ -548,7 +552,8 @@ mod tests {
         let mut rng = rand::thread_rng();
         let T = 7;
         let l = calculate_l(T).unwrap();
-        let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+        let mut db = InMemorySigKeyDb::new();
+        let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
         // t=2
         set.simple_update(&gens, &mut rng).unwrap();
@@ -603,7 +608,8 @@ mod tests {
 
         let T = 15;
         let l = calculate_l(T).unwrap();
-        let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+        let mut db = InMemorySigKeyDb::new();
+        let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
         // t=2
         set.simple_update(&gens, &mut rng).unwrap();
@@ -681,8 +687,8 @@ mod tests {
         let mut rng = rand::thread_rng();
         let T = 7;
         let l = calculate_l(T).unwrap();
-
-        let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+        let mut db = InMemorySigKeyDb::new();
+        let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
         assert_eq!(set.t, 1);
 
         // t=2
@@ -740,7 +746,9 @@ mod tests {
 
         let mut t = 1u128;
         {
-            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, _, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 3;
             fast_forward_and_check(&mut set, t, &gens, &mut rng);
@@ -749,7 +757,9 @@ mod tests {
         }
 
         {
-            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, _, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 4;
             fast_forward_and_check(&mut set, t, &gens, &mut rng);
@@ -758,7 +768,9 @@ mod tests {
         }
 
         {
-            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, _, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 5;
             fast_forward_and_check(&mut set, t, &gens, &mut rng);
@@ -766,7 +778,9 @@ mod tests {
         }
 
         {
-            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, _, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 6;
             fast_forward_and_check(&mut set, t, &gens, &mut rng);
@@ -784,7 +798,9 @@ mod tests {
         let mut t = 1u128;
 
         {
-            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, _, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 2;
             fast_forward_and_check(&mut set, t, &gens, &mut rng);
@@ -801,7 +817,9 @@ mod tests {
         }
 
         {
-            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, _, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 3;
             fast_forward_and_check(&mut set, t, &gens, &mut rng);
@@ -816,7 +834,9 @@ mod tests {
         }
 
         {
-            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, _, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 4;
             fast_forward_and_check(&mut set, t, &gens, &mut rng);
@@ -834,11 +854,12 @@ mod tests {
         let mut rng = rand::thread_rng();
 
         let T = 15;
-        let l = calculate_l(T).unwrap();
-        let mut t = 1u128;
+        let mut t;
 
         {
-            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, _, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 3;
             fast_forward_and_check(&mut set, t, &gens, &mut rng);
@@ -855,7 +876,9 @@ mod tests {
         }
 
         {
-            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, _, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 4;
             fast_forward_and_check(&mut set, t, &gens, &mut rng);
@@ -879,13 +902,19 @@ mod tests {
 
         let T = 65535;
         let l = calculate_l(T).unwrap();
-
-        let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+        let mut db = InMemorySigKeyDb::new();
+        let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
         for i in 1..20 {
             let start = Instant::now();
             set.simple_update(&gens, &mut rng).unwrap();
-            println!("For l={}, time to update key from t={} to t={} is {:?}", l, i, i+1, start.elapsed());
+            println!(
+                "For l={}, time to update key from t={} to t={} is {:?}",
+                l,
+                i,
+                i + 1,
+                start.elapsed()
+            );
         }
     }
 
@@ -896,13 +925,19 @@ mod tests {
 
         let T = 1048575;
         let l = calculate_l(T).unwrap();
-
-        let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+        let mut db = InMemorySigKeyDb::new();
+        let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
         for i in 1..40 {
             let start = Instant::now();
             set.simple_update(&gens, &mut rng).unwrap();
-            println!("For l={}, time to update key from t={} to t={} is {:?}", l, i, i+1, start.elapsed());
+            println!(
+                "For l={}, time to update key from t={} to t={} is {:?}",
+                l,
+                i,
+                i + 1,
+                start.elapsed()
+            );
         }
     }
 
@@ -915,43 +950,79 @@ mod tests {
         let l = calculate_l(T).unwrap();
 
         {
-            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, _, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             let start = Instant::now();
             set.fast_forward_update(3, &gens, &mut rng).unwrap();
-            println!("For l={}, time to update key from t=1 to t=3 is {:?}", l, start.elapsed());
+            println!(
+                "For l={}, time to update key from t=1 to t=3 is {:?}",
+                l,
+                start.elapsed()
+            );
 
             let start = Instant::now();
             set.fast_forward_update(15, &gens, &mut rng).unwrap();
-            println!("For l={}, time to update key from t=3 to t=15 is {:?}", l, start.elapsed());
+            println!(
+                "For l={}, time to update key from t=3 to t=15 is {:?}",
+                l,
+                start.elapsed()
+            );
 
             let start = Instant::now();
             set.fast_forward_update(35, &gens, &mut rng).unwrap();
-            println!("For l={}, time to update key from t=15 to t=35 is {:?}", l, start.elapsed());
+            println!(
+                "For l={}, time to update key from t=15 to t=35 is {:?}",
+                l,
+                start.elapsed()
+            );
 
             let start = Instant::now();
             set.fast_forward_update(10000, &gens, &mut rng).unwrap();
-            println!("For l={}, time to update key from t=35 to t=10000 is {:?}", l, start.elapsed());
+            println!(
+                "For l={}, time to update key from t=35 to t=10000 is {:?}",
+                l,
+                start.elapsed()
+            );
 
             let start = Instant::now();
             set.fast_forward_update(30000, &gens, &mut rng).unwrap();
-            println!("For l={}, time to update key from t=10000 to t=30000 is {:?}", l, start.elapsed());
+            println!(
+                "For l={}, time to update key from t=10000 to t=30000 is {:?}",
+                l,
+                start.elapsed()
+            );
 
             let start = Instant::now();
             set.fast_forward_update(65535, &gens, &mut rng).unwrap();
-            println!("For l={}, time to update key from t=30000 to t=65535 is {:?}", l, start.elapsed());
+            println!(
+                "For l={}, time to update key from t=30000 to t=65535 is {:?}",
+                l,
+                start.elapsed()
+            );
         }
 
         {
-            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, _, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             let start = Instant::now();
             set.fast_forward_update(50000, &gens, &mut rng).unwrap();
-            println!("For l={}, time to update key from t=1 to t=50000 is {:?}", l, start.elapsed());
+            println!(
+                "For l={}, time to update key from t=1 to t=50000 is {:?}",
+                l,
+                start.elapsed()
+            );
 
             let start = Instant::now();
             set.fast_forward_update(65535, &gens, &mut rng).unwrap();
-            println!("For l={}, time to update key from t=50000 to t=65535 is {:?}", l, start.elapsed());
+            println!(
+                "For l={}, time to update key from t=50000 to t=65535 is {:?}",
+                l,
+                start.elapsed()
+            );
         }
     }
 
@@ -964,39 +1035,71 @@ mod tests {
         let l = calculate_l(T).unwrap();
 
         {
-            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, _, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             let start = Instant::now();
             set.fast_forward_update(3, &gens, &mut rng).unwrap();
-            println!("For l={}, time to update key from t=1 to t=3 is {:?}", l, start.elapsed());
+            println!(
+                "For l={}, time to update key from t=1 to t=3 is {:?}",
+                l,
+                start.elapsed()
+            );
 
             let start = Instant::now();
             set.fast_forward_update(19, &gens, &mut rng).unwrap();
-            println!("For l={}, time to update key from t=3 to t=19 is {:?}", l, start.elapsed());
+            println!(
+                "For l={}, time to update key from t=3 to t=19 is {:?}",
+                l,
+                start.elapsed()
+            );
 
             let start = Instant::now();
             set.fast_forward_update(4096, &gens, &mut rng).unwrap();
-            println!("For l={}, time to update key from t=19 to t=4096 is {:?}", l, start.elapsed());
+            println!(
+                "For l={}, time to update key from t=19 to t=4096 is {:?}",
+                l,
+                start.elapsed()
+            );
 
             let start = Instant::now();
             set.fast_forward_update(1048550, &gens, &mut rng).unwrap();
-            println!("For l={}, time to update key from t=4096 to t=1048550 is {:?}", l, start.elapsed());
+            println!(
+                "For l={}, time to update key from t=4096 to t=1048550 is {:?}",
+                l,
+                start.elapsed()
+            );
         }
 
         {
-            let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng).unwrap();
+            let mut db = InMemorySigKeyDb::new();
+            let (gens, _, mut set, _) =
+                setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             let start = Instant::now();
             set.fast_forward_update(19, &gens, &mut rng).unwrap();
-            println!("For l={}, time to update key from t=1 to t=19 is {:?}", l, start.elapsed());
+            println!(
+                "For l={}, time to update key from t=1 to t=19 is {:?}",
+                l,
+                start.elapsed()
+            );
 
             let start = Instant::now();
             set.fast_forward_update(65535, &gens, &mut rng).unwrap();
-            println!("For l={}, time to update key from t=19 to t=65535 is {:?}", l, start.elapsed());
+            println!(
+                "For l={}, time to update key from t=19 to t=65535 is {:?}",
+                l,
+                start.elapsed()
+            );
 
             let start = Instant::now();
             set.fast_forward_update(1048575, &gens, &mut rng).unwrap();
-            println!("For l={}, time to update key from t=65535 to t=1048575 is {:?}", l, start.elapsed());
+            println!(
+                "For l={}, time to update key from t=65535 to t=1048575 is {:?}",
+                l,
+                start.elapsed()
+            );
         }
     }
     // TODO: More tests with random values using node_successors function.

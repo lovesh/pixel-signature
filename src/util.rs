@@ -1,9 +1,8 @@
+use crate::amcl_wrapper::group_elem::GroupElement;
 use crate::errors::PixelError;
 use amcl_wrapper::field_elem::FieldElement;
-use crate::amcl_wrapper::group_elem::GroupElement;
 use amcl_wrapper::group_elem_g1::G1;
 use amcl_wrapper::group_elem_g2::G2;
-
 
 /// second element is a vector with length l+2 and is of form [h, h_0, h_1, h_2, ..., h_l]
 pub struct GeneratorSet(pub G2, pub Vec<G1>);

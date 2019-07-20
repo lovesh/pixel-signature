@@ -10,9 +10,9 @@ rand = "0.6"
 failure = "0.1.5"
 
 [dependencies.amcl_wrapper]
-#git = "https://github.com/lovesh/amcl_rust_wrapper"
-#branch = "master"
-path = "../amcl_wrapper/"
+version = "0.1.6"
+#path = "../amcl_wrapper/"
+default-features = false
 features = ["bls381"]
 
 [dependencies.clear_on_drop]
