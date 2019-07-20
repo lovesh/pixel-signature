@@ -1,4 +1,5 @@
 use rand::{CryptoRng, RngCore};
+use clear_on_drop::clear::Clear;
 
 use amcl_wrapper::errors::SerzDeserzError;
 use amcl_wrapper::field_elem::FieldElement;
@@ -7,12 +8,10 @@ use amcl_wrapper::group_elem_g1::G1;
 use amcl_wrapper::group_elem_g2::G2;
 
 use super::errors::PixelError;
-use crate::util::{
-    calculate_l, calculate_path_factor, from_node_num_to_path, node_successor_paths,
-    path_to_node_num,
-};
+use crate::util::{calculate_l, calculate_path_factor, from_node_num_to_path, node_successor_paths, path_to_node_num, GeneratorSet};
 use amcl_wrapper::extension_field_gt::GT;
 use std::collections::{HashMap, HashSet};
+use std::mem;
 
 pub struct MasterSecret {
     value: FieldElement,
@@ -34,6 +33,12 @@ impl MasterSecret {
     }
 }
 
+impl Drop for MasterSecret {
+    fn drop(&mut self) {
+        self.value.clear()
+    }
+}
+
 // The public key can be in group G1 or G2.
 #[derive(Clone, Debug)]
 pub struct Verkey {
@@ -50,7 +55,7 @@ impl Verkey {
     pub fn aggregate(ver_keys: Vec<&Self>) -> Self {
         let mut avk: G2 = G2::identity();
         for vk in ver_keys {
-            avk += vk.value;
+            avk += &vk.value;
         }
         Self { value: avk }
     }
@@ -83,7 +88,7 @@ pub struct ProofOfPossession {
 /// Keypair consisting of a master secret, the corresponding verkey and the proof of possession
 /// Type GPrime denotes group for public key and type G denotes group for proof of possession.
 pub struct Keypair {
-    // Fixme: Probably the master secret does not need to be persisted once the initial signing keys and PoP has been generated.
+    // Fixme: The master secret does not need to be persisted once the initial signing keys and PoP has been generated.
     // Seems like a bad idea to make it part of struct.
     pub master_secret: MasterSecret,
     pub ver_key: Verkey,
@@ -138,32 +143,15 @@ impl Keypair {
     }
 }
 
-/// second element is a vector with length l+2 and is of form [h, h_0, h_1, h_2, ..., h_l]
-pub struct GeneratorSet(pub G2, pub Vec<G1>);
-
-impl GeneratorSet {
-    pub fn new(T: u128, prefix: &str) -> Result<Self, PixelError> {
-        Ok(GeneratorSet(
-            G2::from_msg_hash(prefix.as_bytes()),
-            Self::create_generators(T, prefix)?,
-        ))
-    }
-
-    /// Returns generators to be used in the protocol. Takes time period T and a prefix string that is
-    /// used to create generators by hashing the prefix string concatenated with integers. T+1 must be a power of 2.
-    pub fn create_generators(T: u128, prefix: &str) -> Result<Vec<G1>, PixelError> {
-        let l = calculate_l(T)? as usize;
-        let mut params = Vec::with_capacity(l + 2);
-        for i in 0..(l + 2) {
-            let s: String = prefix.to_string() + &i.to_string();
-            params.push(G1::from_msg_hash(s.as_bytes()));
-        }
-        Ok(params)
-    }
-}
-
 /// Secret key sk can be seen as (sk', sk'') where sk'' is itself a vector with initial (and max) length l+1
 pub struct Sigkey(pub G2, pub Vec<G1>);
+
+impl Drop for Sigkey {
+    fn drop(&mut self) {
+        self.0.clear();
+        self.1.clear();
+    }
+}
 
 impl Sigkey {
     /// Create secret key for the beginning, i.e. t=1
@@ -180,13 +168,13 @@ impl Sigkey {
         // g^r
         let sk_prime = gen * &r;
         let mut sk_prime_prime = vec![];
-        let h_x = gens[0] * &master_secret.value;
-        let h0_r = gens[1] * &r;
+        let h_x = &gens[0] * &master_secret.value;
+        let h0_r = &gens[1] * &r;
         // h^x.h_0^r
         sk_prime_prime.push(h_x + &h0_r);
         for i in 2..gens.len() {
             // h_i^r
-            sk_prime_prime.push(gens[i] * &r);
+            sk_prime_prime.push(&gens[i] * &r);
         }
         Ok(Self(sk_prime, sk_prime_prime))
     }
@@ -237,13 +225,16 @@ impl SigkeySet {
         // sk.1.len() + path_len == l+1
         debug_assert_eq!(self.l as usize + 1, sk.1.len() + path_len);
 
+        // Index of key that will be removed
+        let removed_key_idx: u128;
+
         if path_len < (self.l as usize - 1) {
             // Create signing keys for left and right child
             let c: G2 = sk.0.clone();
             let d: G1 = sk.1[0].clone();
 
             // key for left child
-            let mut sk_left_prime_prime = vec![d + sk.1[1].clone()];
+            let mut sk_left_prime_prime = vec![&d + &sk.1[1]];
             for i in 2..sk.1.len() {
                 sk_left_prime_prime.push(sk.1[i].clone());
             }
@@ -256,30 +247,33 @@ impl SigkeySet {
 
             let r = FieldElement::random_using_rng(rng);
             // d * e_j^2
-            let mut sk_right_prime_prime = vec![d + (sk.1[1].double())];
+            let mut sk_right_prime_prime = vec![&d + (sk.1[1].double())];
             // h_0 * h_1^path[0] * h_2^path[1] * ... h_k^path[-1]
             let path_factor = calculate_path_factor(path_right, &gens)?;
             // d * e_j^2 * (h_0 * h_1^path[0] * h_2^path[1] * ... h_k^path[-1])^r
-            sk_right_prime_prime[0] += (path_factor * r);
+            sk_right_prime_prime[0] += (&path_factor * &r);
 
             for i in 2..sk.1.len() {
-                let e = sk.1[i] + (gens.1[path_right_len + i] * r);
+                let e = &sk.1[i] + (&gens.1[path_right_len + i] * &r);
                 sk_right_prime_prime.push(e);
             }
 
             // Update the set with keys for both children and remove key corresponding to current time period
-            self.keys.insert(self.t + 1, Sigkey(c, sk_left_prime_prime));
+            self.keys.insert(self.t + 1, Sigkey(c.clone(), sk_left_prime_prime));
             self.keys.insert(
                 node_num_right,
-                Sigkey(c + (gens.0 * r), sk_right_prime_prime),
+                Sigkey(&c + (&gens.0 * &r), sk_right_prime_prime),
             );
-            self.keys.remove(&self.t);
+            removed_key_idx = self.t.clone();
             self.t = self.t + 1;
         } else {
             // Current node is at leaf, so remove current leaf. Already have rest of the keys.
-            self.keys.remove(&self.t);
+            removed_key_idx = self.t.clone();
             self.t = self.t + 1;
         }
+        let old = self.keys.remove(&removed_key_idx);
+        debug_assert!(old.is_some());
+        mem::drop(old.unwrap());
         Ok(())
     }
 
@@ -376,7 +370,9 @@ impl SigkeySet {
         // Remove all others
         let nodes_to_remove = all_key_node_nums.difference(&node_num_to_keep);
         for n in nodes_to_remove {
-            self.keys.remove(n);
+            let old = self.keys.remove(n);
+            debug_assert!(old.is_some());
+            mem::drop(old.unwrap());
         }
         self.t = t;
         Ok(())
@@ -399,15 +395,15 @@ impl SigkeySet {
         let mut d: G1 = pred_sk.1[0].clone();
         for i in pred_sk_path_len..key_path_len {
             if key_path[i] == 1 {
-                d += pred_sk.1[i - pred_sk_path_len + 1];
+                d += &pred_sk.1[i - pred_sk_path_len + 1];
             } else {
-                d += pred_sk.1[i - pred_sk_path_len + 1].double();
+                d += &pred_sk.1[i - pred_sk_path_len + 1].double();
             }
         }
         let path_factor = calculate_path_factor(key_path.to_vec(), &gens)?;
-        d += (path_factor * r);
+        d += (&path_factor * &r);
 
-        let sk_t_prime = c + (&gens.0 * r);
+        let sk_t_prime = c + (&gens.0 * &r);
         let mut sk_t_prime_prime = vec![];
         sk_t_prime_prime.push(d);
 
@@ -415,13 +411,65 @@ impl SigkeySet {
         let gen_len = gens.1.len();
         for i in (key_path_len + 1)..(l as usize + 1) {
             let j = l as usize - i + 1;
-            let a = pred_sk.1[pred_sk_len - j];
-            let b = (gens.1[gen_len - j] * r);
+            let a = &pred_sk.1[pred_sk_len - j];
+            let b = &(&gens.1[gen_len - j] * &r);
             let e = a + b;
             sk_t_prime_prime.push(e);
         }
 
         Ok(Sigkey(sk_t_prime, sk_t_prime_prime))
+    }
+}
+
+pub trait SigKeyDb {
+    fn insert_key(&mut self, t: u128, sig_key: Sigkey);
+
+    /// Removes key from database and zeroes it out
+    fn remove_key(&mut self, t: u128);
+
+    fn has_key(&self, t: u128) -> bool;
+
+    fn get_key(&self, t: u128) -> Result<&Sigkey, PixelError>;
+
+    /// Returns indices (time periods) for all present keys
+    fn key_indices(&self) -> HashSet<u128>;
+}
+
+pub struct InMemorySigKeyDb {
+    keys: HashMap<u128, Sigkey>,
+}
+
+impl SigKeyDb for InMemorySigKeyDb {
+    fn insert_key(&mut self, t: u128, sig_key: Sigkey) {
+        self.keys.insert(t, sig_key);
+    }
+
+    fn remove_key(&mut self, t: u128) {
+        let old = self.keys.remove(&t);
+        debug_assert!(old.is_some());
+        mem::drop(old.unwrap());
+    }
+
+    fn has_key(&self, t: u128) -> bool {
+        self.keys.contains_key(&t)
+    }
+
+    fn get_key(&self, t: u128) -> Result<&Sigkey, PixelError> {
+        match self.keys.get(&t) {
+            Some(key) => Ok(key),
+            None => Err(PixelError::SigkeyNotFound { t }),
+        }
+    }
+
+    fn key_indices(&self) -> HashSet<u128> {
+        self.keys.keys().map(|k| *k).collect()
+    }
+}
+
+impl InMemorySigKeyDb {
+    pub fn new() -> Self {
+        let keys = HashMap::<u128, Sigkey>::new();
+        Self { keys }
     }
 }
 

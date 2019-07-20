@@ -1,8 +1,33 @@
 use crate::errors::PixelError;
-use crate::keys::GeneratorSet;
 use amcl_wrapper::field_elem::FieldElement;
 use crate::amcl_wrapper::group_elem::GroupElement;
 use amcl_wrapper::group_elem_g1::G1;
+use amcl_wrapper::group_elem_g2::G2;
+
+
+/// second element is a vector with length l+2 and is of form [h, h_0, h_1, h_2, ..., h_l]
+pub struct GeneratorSet(pub G2, pub Vec<G1>);
+
+impl GeneratorSet {
+    pub fn new(T: u128, prefix: &str) -> Result<Self, PixelError> {
+        Ok(GeneratorSet(
+            G2::from_msg_hash(prefix.as_bytes()),
+            Self::create_generators(T, prefix)?,
+        ))
+    }
+
+    /// Returns generators to be used in the protocol. Takes time period T and a prefix string that is
+    /// used to create generators by hashing the prefix string concatenated with integers. T+1 must be a power of 2.
+    pub fn create_generators(T: u128, prefix: &str) -> Result<Vec<G1>, PixelError> {
+        let l = calculate_l(T)? as usize;
+        let mut params = Vec::with_capacity(l + 2);
+        for i in 0..(l + 2) {
+            let s: String = prefix.to_string() + &i.to_string();
+            params.push(G1::from_msg_hash(s.as_bytes()));
+        }
+        Ok(params)
+    }
+}
 
 // TODO: Abstract left and right in an enum with values 1 and 2 rather than using hardcoded 1 and 2.
 // This also helps input validation in lots of places.
@@ -132,9 +157,9 @@ pub fn calculate_path_factor(path: Vec<u8>, gens: &GeneratorSet) -> Result<G1, P
     // h_0*h_1^path[0]*h_2^path[2]*......
     for (i, p) in path.iter().enumerate() {
         if *p == 1 {
-            sigma_1_1 += gens.1[2 + i]
+            sigma_1_1 += &gens.1[2 + i]
         } else {
-            sigma_1_1 += gens.1[2 + i].double()
+            sigma_1_1 += &gens.1[2 + i].double()
         }
     }
 
@@ -197,7 +222,7 @@ mod tests {
         assert!(from_node_num_to_path(17, 4).is_err());
         assert!(from_node_num_to_path(20, 4).is_err());
 
-        assert_eq!(from_node_num_to_path(1, 3).unwrap(), vec![]);
+        assert_eq!(from_node_num_to_path(1, 3).unwrap(), Vec::<u8>::new());
         assert_eq!(from_node_num_to_path(2, 3).unwrap(), vec![1]);
         assert_eq!(from_node_num_to_path(3, 3).unwrap(), vec![1, 1]);
         assert_eq!(from_node_num_to_path(4, 3).unwrap(), vec![1, 2]);

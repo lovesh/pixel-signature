@@ -7,9 +7,8 @@ use amcl_wrapper::group_elem_g1::{G1, G1Vector};
 use amcl_wrapper::group_elem_g2::G2;
 
 use crate::errors::PixelError;
-use crate::keys::GeneratorSet;
 use crate::keys::{Sigkey, Verkey};
-use crate::util::{calculate_path_factor_using_t_l, from_node_num_to_path};
+use crate::util::{calculate_path_factor_using_t_l, from_node_num_to_path, GeneratorSet};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Signature {
@@ -32,7 +31,7 @@ impl Signature {
         }
 
         let r = FieldElement::random_using_rng(rng);
-        Self::gen_sig(msg, t, l, gens, sig_key, &r)
+        Self::gen_sig(msg, t, l, gens, sig_key, r)
     }
 
     /// Creates new deterministic signature. Signature for same message and secret key will be equal
@@ -47,15 +46,15 @@ impl Signature {
             return Err(PixelError::NotEnoughGenerators { n: l as usize + 2 });
         }
         let r = Self::gen_sig_rand(msg, sig_key);
-        Self::gen_sig(msg, t, l, gens, sig_key, &r)
+        Self::gen_sig(msg, t, l, gens, sig_key, r)
     }
 
     pub fn aggregate(sigs: Vec<&Self>) -> Self {
         let mut asig_1 = G1::identity();
         let mut asig_2 = G2::identity();
         for s in sigs {
-            asig_1 += s.sigma_1;
-            asig_2 += s.sigma_2;
+            asig_1 += &s.sigma_1;
+            asig_2 += &s.sigma_2;
         }
         Self {
             sigma_1: asig_1,
@@ -114,12 +113,14 @@ impl Signature {
                l: u8,
                gens: &GeneratorSet,
                sig_key: &Sigkey,
-               r: &FieldElement) ->  Result<Self, PixelError> {
+               r: FieldElement) ->  Result<Self, PixelError> {
         let c: G2 = sig_key.0.clone();
         let d: G1 = sig_key.1[0].clone();
 
         // Hash(msg) -> FieldElement
         let m = Self::hash_message(msg);
+
+        let sigma_2 = &c + (&gens.0 * &r);
 
         // e_l
         let e_l: G1 = sig_key.1[sig_key.1.len() - 1].clone();
@@ -134,17 +135,16 @@ impl Signature {
         points.push(e_l);
         scalars.push(m.clone());
 
+        // gens.1[l as usize + 1] * (m * r)
+        points.push(gens.1[l as usize + 1].clone());
+        scalars.push(m * &r);
+
         // pf * r
         points.push(pf);
-        scalars.push(*r);
-
-        // gens.1[l as usize + 1] * (m * r)
-        points.push(gens.1[l as usize + 1]);
-        scalars.push(m*r);
+        scalars.push(r);
 
         sigma_1 += points.multi_scalar_mul_const_time(&scalars).unwrap();
 
-        let sigma_2 = c + (&gens.0 * r);
         Ok(Self {
             sigma_1: sigma_1.clone(),
             sigma_2: sigma_2.clone(),
