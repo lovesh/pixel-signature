@@ -177,7 +177,7 @@ impl Signature {
         // Which comes out to be e(h, y) * e(sigma_1_1, sigma_2) * e(sigma_1, -g2) == 1 which can put in a multi-pairing.
         // -g2 can be precomputed if performance is critical
         // Similarly it might be better to precompute e(h, y) and do a 2-pairing than a 3-pairing
-        let e = GT::ate_mutli_pairing(vec![(&sigma_1, &g2.negation()), (h, y), (&sigma_1_1, sigma_2)]);
+        let e = GT::ate_multi_pairing(vec![(&sigma_1, &g2.negation()), (h, y), (&sigma_1_1, sigma_2)]);
         Ok(e.is_one())
     }
 
