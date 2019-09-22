@@ -33,13 +33,14 @@ nodes 3, 6 and 9 (no need to derive key for node 2) and then remove key for node
 
 ## API
 1. There is a `Sigkey` object denoting the signing key for a time period. A signer needs to maintain a bunch of signing keys. 
-1. That is done through the `SigkeySet` object. `SigkeySet` is stateful and keeps the signing keys and the current time period as well. 
-   It has methods to update time by 1 or a fast forward update to any arbitrary time in future.
+1. That is done through the `SigkeyManager` object. `SigkeyManager` is accompanied by a database object implementing the `SigKeyDb` interface. 
+`SigkeyManager` keeps the current time period and `SigKeyDb` keeps the signing keys. For testing, `InMemorySigKeyDb` is given which implements
+ `SigKeyDb` and keeps the keys in an in-memory hashmap. `SigkeyManager` has methods to update time by 1 or a fast forward update to any arbitrary time in future.
    - To advance to next time period, call `simple_update`. 
    - To advance to any arbitrary time in future, call `fast_forward_update`. 
    - To get current key call `get_current_key`.    
 1. Call the `GeneratorSet::new` function to create the required number of generators
-1. Once generators are created, call `Keypair::new` to create a new verification key, `SigkeySet` with key for t=1 and the proof of possession.
+1. Once generators are created, call `Keypair::new` to create a new verification key, `SigkeyManager` with key for t=1 and the proof of possession.
 1. Call `Keypair::verify_pop` to verify proof of possession. 
 1. Call `Signature::new` to generate a in-deterministic signature on a message. This will lead to different signatures given the same secret key 
 and same time period each time this method is called.

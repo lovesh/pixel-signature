@@ -178,9 +178,7 @@ impl Sigkey {
     }
 }
 
-/// keys is a hashmap with the hashmap key as the time period for which the key needs to be used.
-/// The hashmap will get new entries and remove old entries as time passes. `t` denotes the current time period.
-/// This data-structure is to be kept secret.
+/// `T` denotes the maximum time period supported and `t` denotes the current time period.
 pub struct SigkeyManager<'a> {
     l: u8,
     T: u128,
@@ -419,6 +417,8 @@ impl<'a> SigkeyManager<'a> {
     }
 }
 
+/// Key-value database interface that needs to be implemented for storing signing keys.
+/// Signing key are db values whereas db keys are the time period for which the signing key needs to be used.
 pub trait SigKeyDb {
     fn insert_key(&mut self, t: u128, sig_key: Sigkey);
 
@@ -433,6 +433,7 @@ pub trait SigKeyDb {
     fn get_key_indices(&self) -> HashSet<u128>;
 }
 
+/// An in-memory database for storing signing keys. Uses hashmap. Should only be used for testing.
 pub struct InMemorySigKeyDb {
     keys: HashMap<u128, Sigkey>,
 }
