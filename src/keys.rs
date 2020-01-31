@@ -1,4 +1,3 @@
-use clear_on_drop::clear::Clear;
 use rand::{CryptoRng, RngCore};
 
 use amcl_wrapper::errors::SerzDeserzError;
@@ -16,6 +15,8 @@ use amcl_wrapper::extension_field_gt::GT;
 use std::collections::{HashMap, HashSet};
 use std::mem;
 
+/// MasterSecret will be cleared on drop as FieldElement is cleared on drop
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MasterSecret {
     value: FieldElement,
 }
@@ -36,14 +37,8 @@ impl MasterSecret {
     }
 }
 
-impl Drop for MasterSecret {
-    fn drop(&mut self) {
-        self.value.clear()
-    }
-}
-
 // The public key can be in group G1 or G2.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Verkey {
     pub value: G2,
 }
@@ -83,13 +78,14 @@ impl Verkey {
 /// Proof of Possession of signing key. It is a signature on the verification key and can be
 /// group in G1 or G2. But it is in different group than Verkey.
 /// If Verkey is in G2 then proof of possession is in G1 and vice versa.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProofOfPossession {
     pub value: G1,
 }
 
 /// Keypair consisting of a master secret, the corresponding verkey and the proof of possession
 /// Type GPrime denotes group for public key and type G denotes group for proof of possession.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Keypair {
     pub ver_key: Verkey,
     pub pop: ProofOfPossession,
@@ -102,7 +98,7 @@ impl<'a> Keypair {
         T: u128,
         generators: &GeneratorSet,
         rng: &mut R,
-        db: &'a mut SigKeyDb,
+        db: &'a mut dyn SigKeyDb,
     ) -> Result<(Self, SigkeyManager<'a>), PixelError> {
         let master_secret = MasterSecret::new(rng);
         let ver_key = Verkey::from_master_secret(&master_secret, &generators.0);
@@ -142,14 +138,9 @@ impl<'a> Keypair {
 }
 
 /// Secret key sk can be seen as (sk', sk'') where sk'' is itself a vector with initial (and max) length l+1
+/// Sigkey will be cleared on drop as both G1 and G2 elements are cleared on drop
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Sigkey(pub G2, pub Vec<G1>);
-
-impl Drop for Sigkey {
-    fn drop(&mut self) {
-        self.0.clear();
-        self.1.clear();
-    }
-}
 
 impl Sigkey {
     /// Create secret key for the beginning, i.e. t=1
@@ -183,17 +174,17 @@ pub struct SigkeyManager<'a> {
     l: u8,
     T: u128,
     t: u128,
-    db: &'a mut SigKeyDb,
+    db: &'a mut dyn SigKeyDb,
 }
 
 impl<'a> SigkeyManager<'a> {
-    pub fn new(T: u128, l: u8, sigkey: Sigkey, db: &'a mut SigKeyDb) -> Result<Self, PixelError> {
+    pub fn new(T: u128, l: u8, sigkey: Sigkey, db: &'a mut dyn SigKeyDb) -> Result<Self, PixelError> {
         let t = 1;
         db.insert_key(t.clone(), sigkey);
         Ok(Self { l, T, t, db })
     }
 
-    pub fn load(T: u128, l: u8, t: u128, db: &'a mut SigKeyDb) -> Result<Self, PixelError> {
+    pub fn load(T: u128, l: u8, t: u128, db: &'a mut dyn SigKeyDb) -> Result<Self, PixelError> {
         Ok(Self { l, T, t, db })
     }
 
@@ -328,7 +319,7 @@ impl<'a> SigkeyManager<'a> {
                     cur_path
                 };
                 let pred_node_num = path_to_node_num(&pred_sk_path, self.l)?;
-                let pred_sk = { self.get_key(pred_node_num)?.clone() };
+                let pred_sk = { self.get_key(pred_node_num)? };
                 let pred_sk_path_len = pred_sk_path.len();
 
                 let keys = {
@@ -478,7 +469,7 @@ pub fn setup<'a, R: RngCore + CryptoRng>(
     T: u128,
     prefix: &str,
     rng: &mut R,
-    db: &'a mut SigKeyDb,
+    db: &'a mut dyn SigKeyDb,
 ) -> Result<(GeneratorSet, Verkey, SigkeyManager<'a>, ProofOfPossession), PixelError> {
     let generators = GeneratorSet::new(T, prefix)?;
     let (keypair, sigkeys) = Keypair::new(T, &generators, rng, db)?;

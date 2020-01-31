@@ -1,14 +1,15 @@
 #![allow(non_snake_case)]
+
 extern crate rand;
 #[macro_use]
 extern crate amcl_wrapper;
-/*#[macro_use]
-extern crate error_chain;*/
+
 #[macro_use]
 extern crate failure;
 
+extern crate serde;
 #[macro_use]
-extern crate clear_on_drop;
+extern crate serde_derive;
 
 pub mod errors;
 pub mod keys;

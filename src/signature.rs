@@ -10,7 +10,7 @@ use crate::errors::PixelError;
 use crate::keys::{Sigkey, Verkey};
 use crate::util::{calculate_path_factor_using_t_l, from_node_num_to_path, GeneratorSet};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Signature {
     pub sigma_1: G1,
     pub sigma_2: G2,
@@ -145,7 +145,7 @@ impl Signature {
         points.push(pf);
         scalars.push(r);
 
-        sigma_1 += points.multi_scalar_mul_const_time(&scalars).unwrap();
+        sigma_1 += points.multi_scalar_mul_const_time(scalars.as_ref()).unwrap();
 
         Ok(Self {
             sigma_1: sigma_1.clone(),

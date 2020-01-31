@@ -1,19 +1,21 @@
 [package]
 name = "pixel-sig"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["lovesh <lovesh.bond@gmail.com>"]
 edition = "2018"
+description = "Pixel: Forward secure Multi-signatures"
+license = "Apache-2.0"
+repository = "https://github.com/lovesh/pixel-signature"
 
 [dependencies]
-rand = "0.6"
+rand = "0.7"
 #error-chain = "0.11.0"
 failure = "0.1.5"
+serde = "1.0"
+serde_derive = "1.0"
 
 [dependencies.amcl_wrapper]
-version = "0.1.6"
+version = "0.3.5"
 #path = "../amcl_wrapper/"
 default-features = false
 features = ["bls381"]
-
-[dependencies.clear_on_drop]
-version = "0.2.3"
