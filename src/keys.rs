@@ -17,7 +17,7 @@ use crate::{VerkeyGroup, SignatureGroup, ate_2_pairing};
 /// MasterSecret will be cleared on drop as FieldElement is cleared on drop
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MasterSecret {
-    value: FieldElement,
+    pub value: FieldElement,
 }
 
 impl MasterSecret {
@@ -98,7 +98,7 @@ impl<'a> Keypair {
         generators: &GeneratorSet,
         rng: &mut R,
         db: &'a mut dyn SigKeyDb,
-    ) -> Result<(Self, SigkeyManager<'a>), PixelError> {
+    ) -> Result<(Self, SigkeyManager), PixelError> {
         let master_secret = MasterSecret::new(rng);
         let ver_key = Verkey::from_master_secret(&master_secret, &generators.0);
         let pop = Self::gen_pop(&ver_key, &master_secret);
@@ -116,7 +116,7 @@ impl<'a> Keypair {
     }
 
     /// Generate proof of possession
-    fn gen_pop(vk: &Verkey, x: &MasterSecret) -> ProofOfPossession {
+    pub fn gen_pop(vk: &Verkey, x: &MasterSecret) -> ProofOfPossession {
         ProofOfPossession {
             value: Self::msg_for_pop(vk) * &x.value,
         }
@@ -156,9 +156,11 @@ impl Sigkey {
         // g^r
         let sk_prime = gen * &r;
         let mut sk_prime_prime = vec![];
+        // h^x
         let h_x = &gens[0] * &master_secret.value;
+        // h_0^r
         let h0_r = &gens[1] * &r;
-        // h^x.h_0^r
+        // h^x * h_0^r
         sk_prime_prime.push(h_x + &h0_r);
         for i in 2..gens.len() {
             // h_i^r
@@ -169,34 +171,34 @@ impl Sigkey {
 }
 
 /// `T` denotes the maximum time period supported and `t` denotes the current time period.
-pub struct SigkeyManager<'a> {
+/// #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SigkeyManager {
     l: u8,
     T: u128,
     t: u128,
-    db: &'a mut dyn SigKeyDb,
 }
 
-impl<'a> SigkeyManager<'a> {
-    pub fn new(T: u128, l: u8, sigkey: Sigkey, db: &'a mut dyn SigKeyDb) -> Result<Self, PixelError> {
+impl SigkeyManager {
+    pub fn new(T: u128, l: u8, sigkey: Sigkey, db: &mut dyn SigKeyDb) -> Result<Self, PixelError> {
         let t = 1;
         db.insert_key(t.clone(), sigkey);
-        Ok(Self { l, T, t, db })
+        Ok(Self { l, T, t})
     }
 
-    pub fn load(T: u128, l: u8, t: u128, db: &'a mut dyn SigKeyDb) -> Result<Self, PixelError> {
-        Ok(Self { l, T, t, db })
+    pub fn load(T: u128, l: u8, t: u128) -> Result<Self, PixelError> {
+        Ok(Self { l, T, t})
     }
 
-    pub fn has_key(&self, t: u128) -> bool {
-        self.db.has_key(t)
+    pub fn has_key(t: u128, db: &dyn SigKeyDb) -> bool {
+        db.has_key(t)
     }
 
-    pub fn get_key(&self, t: u128) -> Result<&Sigkey, PixelError> {
-        self.db.get_key(t)
+    pub fn get_key<'a>(t: u128, db: &'a dyn SigKeyDb) -> Result<&'a Sigkey, PixelError> {
+        db.get_key(t)
     }
 
-    pub fn get_current_key(&self) -> Result<&Sigkey, PixelError> {
-        self.db.get_key(self.t)
+    pub fn get_current_key<'a>(&self, db: &'a dyn SigKeyDb) -> Result<&'a Sigkey, PixelError> {
+        db.get_key(self.t)
     }
 
     /// Update time by 1
@@ -204,10 +206,11 @@ impl<'a> SigkeyManager<'a> {
         &mut self,
         gens: &GeneratorSet,
         rng: &mut R,
+        db: &mut dyn SigKeyDb
     ) -> Result<u128, PixelError> {
         let path = from_node_num_to_path(self.t, self.l)?;
         let path_len = path.len();
-        let sk = self.get_current_key()?;
+        let sk = self.get_current_key(db)?;
         // sk.1.len() + path_len == l+1
         debug_assert_eq!(self.l as usize + 1, sk.1.len() + path_len);
 
@@ -245,9 +248,9 @@ impl<'a> SigkeyManager<'a> {
             }
 
             // Update the set with keys for both children and remove key corresponding to current time period
-            self.db
+            db
                 .insert_key(self.t + 1, Sigkey(c.clone(), sk_left_prime_prime));
-            self.db.insert_key(
+            db.insert_key(
                 node_num_right,
                 Sigkey(&c + (&gens.0 * &r), sk_right_prime_prime),
             );
@@ -258,7 +261,7 @@ impl<'a> SigkeyManager<'a> {
             removed_key_idx = self.t.clone();
             self.t = self.t + 1;
         }
-        self.db.remove_key(removed_key_idx);
+        db.remove_key(removed_key_idx);
         Ok(removed_key_idx)
     }
 
@@ -268,6 +271,7 @@ impl<'a> SigkeyManager<'a> {
         t: u128,
         gens: &GeneratorSet,
         rng: &mut R,
+        db: &mut dyn SigKeyDb
     ) -> Result<Vec<u128>, PixelError> {
         if t > ((1 << self.l) - 1) as u128 {
             return Err(PixelError::InvalidNodeNum { t, l: self.l });
@@ -285,7 +289,7 @@ impl<'a> SigkeyManager<'a> {
 
         if (t - self.t) == 1 {
             // Simple update is more efficient
-            let removed = self.simple_update(gens, rng)?;
+            let removed = self.simple_update(gens, rng, db)?;
             return Ok(vec![removed]);
         }
 
@@ -297,28 +301,28 @@ impl<'a> SigkeyManager<'a> {
             .iter()
             .filter(|p| {
                 let n = path_to_node_num(p, self.l).unwrap();
-                !self.has_key(n)
+                !Self::has_key(n, db)
             })
             .collect();
 
-        match self.get_key(t) {
+        match Self::get_key(t, db) {
             Ok(_) => (), // Key and thus all needed successors already present
             Err(_) => {
                 // Key absent. Calculate the highest predecessor path and key to derive necessary children.
-                let pred_sk_path: Vec<u8> = if self.has_key(1) {
+                let pred_sk_path: Vec<u8> = if Self::has_key(1, db) {
                     vec![]
                 } else {
                     let mut cur_path = vec![];
                     for p in &t_path {
                         cur_path.push(*p);
-                        if self.has_key(path_to_node_num(&cur_path, self.l)?) {
+                        if Self::has_key(path_to_node_num(&cur_path, self.l)?, db) {
                             break;
                         }
                     }
                     cur_path
                 };
                 let pred_node_num = path_to_node_num(&pred_sk_path, self.l)?;
-                let pred_sk = { self.get_key(pred_node_num)? };
+                let pred_sk = { Self::get_key(pred_node_num, db)? };
                 let pred_sk_path_len = pred_sk_path.len();
 
                 let keys = {
@@ -339,14 +343,13 @@ impl<'a> SigkeyManager<'a> {
                 };
 
                 for (i, k) in keys {
-                    //self.keys.insert(i, k);
-                    self.db.insert_key(i, k);
+                    db.insert_key(i, k);
                 }
             }
         };
 
         // Remove all nodes except successors and the node for time t.
-        let all_key_node_nums: HashSet<_> = self.db.get_key_indices();
+        let all_key_node_nums: HashSet<_> = db.get_key_indices();
         // Keep successors
         let mut node_num_to_keep: HashSet<u128> = successor_paths
             .iter()
@@ -358,7 +361,7 @@ impl<'a> SigkeyManager<'a> {
         let nodes_to_remove = all_key_node_nums.difference(&node_num_to_keep);
         let mut removed = vec![];
         for n in nodes_to_remove {
-            self.db.remove_key(*n);
+            db.remove_key(*n);
             removed.push(n.clone())
         }
         self.t = t;
@@ -469,7 +472,7 @@ pub fn setup<'a, R: RngCore + CryptoRng>(
     prefix: &str,
     rng: &mut R,
     db: &'a mut dyn SigKeyDb,
-) -> Result<(GeneratorSet, Verkey, SigkeyManager<'a>, ProofOfPossession), PixelError> {
+) -> Result<(GeneratorSet, Verkey, SigkeyManager, ProofOfPossession), PixelError> {
     let generators = GeneratorSet::new(T, prefix)?;
     let (keypair, sigkeys) = Keypair::new(T, &generators, rng, db)?;
     Ok((generators, keypair.ver_key, sigkeys, keypair.pop))
@@ -487,13 +490,14 @@ mod tests {
         t: u128,
         gens: &GeneratorSet,
         mut rng: &mut R,
+        db: &mut dyn SigKeyDb
     ) {
-        set.fast_forward_update(t, &gens, &mut rng).unwrap();
+        set.fast_forward_update(t, &gens, &mut rng, db).unwrap();
         assert_eq!(set.t, t);
         for i in 1..t {
-            assert!(!set.has_key(i as u128));
+            assert!(!SigkeyManager::has_key(i as u128, db));
         }
-        assert!(set.has_key(t));
+        assert!(SigkeyManager::has_key(t, db));
     }
 
     #[test]
@@ -525,14 +529,14 @@ mod tests {
         let l1 = calculate_l(T1).unwrap();
         let mut db1 = InMemorySigKeyDb::new();
         let (_, _, set1, _) = setup::<ThreadRng>(T1, "test_pixel", &mut rng, &mut db1).unwrap();
-        let sk1 = set1.get_key(1u128).unwrap();
+        let sk1 = SigkeyManager::get_key(1u128, &db1).unwrap();
         assert_eq!(sk1.1.len() as u8, l1 + 1);
 
         let T2 = 15;
         let l2 = calculate_l(T2).unwrap();
         let mut db2 = InMemorySigKeyDb::new();
         let (_, _, set2, _) = setup::<ThreadRng>(T2, "test_pixel", &mut rng, &mut db2).unwrap();
-        let sk2 = set2.get_key(1u128).unwrap();
+        let sk2 = SigkeyManager::get_key(1u128, &db2).unwrap();
         assert_eq!(sk2.1.len() as u8, l2 + 1);
     }
 
@@ -547,48 +551,48 @@ mod tests {
         let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
         // t=2
-        set.simple_update(&gens, &mut rng).unwrap();
-        let sk_left = set.get_key(2u128).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        let sk_left = SigkeyManager::get_key(2u128, &db).unwrap();
         assert_eq!(sk_left.1.len() as u8, l);
-        let sk_right = set.get_key(5u128).unwrap();
+        let sk_right = SigkeyManager::get_key(5u128, &db).unwrap();
         assert_eq!(sk_right.1.len() as u8, l);
         assert_eq!(set.t, 2);
-        assert!(!set.has_key(1u128));
+        assert!(!SigkeyManager::has_key(1u128, &db));
 
         // t=3
-        set.simple_update(&gens, &mut rng).unwrap();
-        let sk_left = set.get_key(3u128).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        let sk_left = SigkeyManager::get_key(3u128, &db).unwrap();
         assert_eq!(sk_left.1.len() as u8, l - 1);
-        let sk_right = set.get_key(4u128).unwrap();
+        let sk_right = SigkeyManager::get_key(4u128, &db).unwrap();
         assert_eq!(sk_right.1.len() as u8, l - 1);
         assert_eq!(set.t, 3);
-        assert!(!set.has_key(2u128));
-        assert!(set.has_key(5u128));
+        assert!(!SigkeyManager::has_key(2u128, &db));
+        assert!(SigkeyManager::has_key(5u128, &db));
 
         // t=4
-        set.simple_update(&gens, &mut rng).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
         assert_eq!(set.t, 4);
-        assert!(!set.has_key(3u128));
-        assert!(set.has_key(4u128));
-        assert!(set.has_key(5u128));
+        assert!(!SigkeyManager::has_key(3u128, &db));
+        assert!(SigkeyManager::has_key(4u128, &db));
+        assert!(SigkeyManager::has_key(5u128, &db));
 
         // t=5
-        set.simple_update(&gens, &mut rng).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
         assert_eq!(set.t, 5);
-        assert!(!set.has_key(4u128));
+        assert!(!SigkeyManager::has_key(4u128, &db));
 
         // t=6
-        set.simple_update(&gens, &mut rng).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
         assert_eq!(set.t, 6);
-        assert!(!set.has_key(5u128));
-        assert!(set.has_key(6u128));
-        assert!(set.has_key(7u128));
+        assert!(!SigkeyManager::has_key(5u128, &db));
+        assert!(SigkeyManager::has_key(6u128, &db));
+        assert!(SigkeyManager::has_key(7u128, &db));
 
         // t=7
-        set.simple_update(&gens, &mut rng).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
         assert_eq!(set.t, 7);
-        assert!(!set.has_key(6u128));
-        assert!(set.has_key(7u128));
+        assert!(!SigkeyManager::has_key(6u128, &db));
+        assert!(SigkeyManager::has_key(7u128, &db));
     }
 
     #[test]
@@ -603,72 +607,72 @@ mod tests {
         let (gens, _, mut set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
         // t=2
-        set.simple_update(&gens, &mut rng).unwrap();
-        let sk_left = set.get_key(2u128).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        let sk_left = SigkeyManager::get_key(2u128, &db).unwrap();
         assert_eq!(sk_left.1.len() as u8, l);
-        let sk_right = set.get_key(9u128).unwrap();
+        let sk_right = SigkeyManager::get_key(9u128, &db).unwrap();
         assert_eq!(sk_right.1.len() as u8, l);
         assert_eq!(set.t, 2);
-        assert!(!set.has_key(1u128));
-        assert!(set.has_key(9u128));
+        assert!(!SigkeyManager::has_key(1u128, &db));
+        assert!(SigkeyManager::has_key(9u128, &db));
 
         // t=3
-        set.simple_update(&gens, &mut rng).unwrap();
-        let sk_left = set.get_key(3u128).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        let sk_left = SigkeyManager::get_key(3u128, &db).unwrap();
         assert_eq!(sk_left.1.len() as u8, l - 1);
-        let sk_right = set.get_key(6u128).unwrap();
+        let sk_right = SigkeyManager::get_key(6u128, &db).unwrap();
         assert_eq!(sk_right.1.len() as u8, l - 1);
         assert_eq!(set.t, 3);
-        assert!(!set.has_key(2u128));
-        assert!(set.has_key(9u128));
+        assert!(!SigkeyManager::has_key(2u128, &db));
+        assert!(SigkeyManager::has_key(9u128, &db));
 
         // t=4
-        set.simple_update(&gens, &mut rng).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
         assert_eq!(set.t, 4);
-        assert!(!set.has_key(3u128));
-        assert!(set.has_key(5u128));
-        assert!(set.has_key(6u128));
-        assert!(set.has_key(9u128));
+        assert!(!SigkeyManager::has_key(3u128, &db));
+        assert!(SigkeyManager::has_key(5u128, &db));
+        assert!(SigkeyManager::has_key(6u128, &db));
+        assert!(SigkeyManager::has_key(9u128, &db));
 
         // t=5
-        set.simple_update(&gens, &mut rng).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
         assert_eq!(set.t, 5);
-        assert!(!set.has_key(4u128));
-        assert!(set.has_key(6u128));
-        assert!(set.has_key(9u128));
+        assert!(!SigkeyManager::has_key(4u128, &db));
+        assert!(SigkeyManager::has_key(6u128, &db));
+        assert!(SigkeyManager::has_key(9u128, &db));
 
         // t=6
-        set.simple_update(&gens, &mut rng).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
         assert_eq!(set.t, 6);
-        assert!(!set.has_key(5u128));
-        assert!(set.has_key(6u128));
-        assert!(set.has_key(9u128));
+        assert!(!SigkeyManager::has_key(5u128, &db));
+        assert!(SigkeyManager::has_key(6u128, &db));
+        assert!(SigkeyManager::has_key(9u128, &db));
 
         // t=7
-        set.simple_update(&gens, &mut rng).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
         assert_eq!(set.t, 7);
-        assert!(!set.has_key(6u128));
-        assert!(set.has_key(8u128));
-        assert!(set.has_key(9u128));
+        assert!(!SigkeyManager::has_key(6u128, &db));
+        assert!(SigkeyManager::has_key(8u128, &db));
+        assert!(SigkeyManager::has_key(9u128, &db));
 
         // t=8
-        set.simple_update(&gens, &mut rng).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
 
         // t=9
-        set.simple_update(&gens, &mut rng).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
 
         // t=10
-        set.simple_update(&gens, &mut rng).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
         assert_eq!(set.t, 10);
-        assert!(!set.has_key(9u128));
-        assert!(set.has_key(13u128));
+        assert!(!SigkeyManager::has_key(9u128, &db));
+        assert!(SigkeyManager::has_key(13u128, &db));
 
         // t=11
-        set.simple_update(&gens, &mut rng).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
         assert_eq!(set.t, 11);
-        assert!(!set.has_key(10u128));
-        assert!(set.has_key(12u128));
-        assert!(set.has_key(13u128));
+        assert!(!SigkeyManager::has_key(10u128, &db));
+        assert!(SigkeyManager::has_key(12u128, &db));
+        assert!(SigkeyManager::has_key(13u128, &db));
     }
 
     #[test]
@@ -683,48 +687,48 @@ mod tests {
         assert_eq!(set.t, 1);
 
         // t=2
-        set.fast_forward_update(2u128, &gens, &mut rng).unwrap();
-        let sk_left = set.get_key(2u128).unwrap();
+        set.fast_forward_update(2u128, &gens, &mut rng, &mut db).unwrap();
+        let sk_left = SigkeyManager::get_key(2u128, &db).unwrap();
         assert_eq!(sk_left.1.len() as u8, l);
-        let sk_right = set.get_key(5u128).unwrap();
+        let sk_right = SigkeyManager::get_key(5u128, &db).unwrap();
         assert_eq!(sk_right.1.len() as u8, l);
         assert_eq!(set.t, 2);
-        assert!(!set.has_key(1u128));
+        assert!(!SigkeyManager::has_key(1u128, &db));
 
         // t=3
-        set.fast_forward_update(3u128, &gens, &mut rng).unwrap();
-        let sk_left = set.get_key(3u128).unwrap();
+        set.fast_forward_update(3u128, &gens, &mut rng, &mut db).unwrap();
+        let sk_left = SigkeyManager::get_key(3u128, &db).unwrap();
         assert_eq!(sk_left.1.len() as u8, l - 1);
-        let sk_right = set.get_key(4u128).unwrap();
+        let sk_right = SigkeyManager::get_key(4u128, &db).unwrap();
         assert_eq!(sk_right.1.len() as u8, l - 1);
         assert_eq!(set.t, 3);
-        assert!(!set.has_key(2u128));
-        assert!(set.has_key(5u128));
+        assert!(!SigkeyManager::has_key(2u128, &db));
+        assert!(SigkeyManager::has_key(5u128, &db));
 
         // t=4
-        set.fast_forward_update(4u128, &gens, &mut rng).unwrap();
+        set.fast_forward_update(4u128, &gens, &mut rng, &mut db).unwrap();
         assert_eq!(set.t, 4);
-        assert!(!set.has_key(3u128));
-        assert!(set.has_key(4u128));
-        assert!(set.has_key(5u128));
+        assert!(!SigkeyManager::has_key(3u128, &db));
+        assert!(SigkeyManager::has_key(4u128, &db));
+        assert!(SigkeyManager::has_key(5u128, &db));
 
         // t=5
-        set.fast_forward_update(5u128, &gens, &mut rng).unwrap();
+        set.fast_forward_update(5u128, &gens, &mut rng, &mut db).unwrap();
         assert_eq!(set.t, 5);
-        assert!(!set.has_key(4u128));
+        assert!(!SigkeyManager::has_key(4u128, &db));
 
         // t=6
-        set.fast_forward_update(6u128, &gens, &mut rng).unwrap();
+        set.fast_forward_update(6u128, &gens, &mut rng, &mut db).unwrap();
         assert_eq!(set.t, 6);
-        assert!(!set.has_key(5u128));
-        assert!(set.has_key(6u128));
-        assert!(set.has_key(7u128));
+        assert!(!SigkeyManager::has_key(5u128, &db));
+        assert!(SigkeyManager::has_key(6u128, &db));
+        assert!(SigkeyManager::has_key(7u128, &db));
 
         // t=7
-        set.fast_forward_update(7u128, &gens, &mut rng).unwrap();
+        set.fast_forward_update(7u128, &gens, &mut rng, &mut db).unwrap();
         assert_eq!(set.t, 7);
-        assert!(!set.has_key(6u128));
-        assert!(set.has_key(7u128));
+        assert!(!SigkeyManager::has_key(6u128, &db));
+        assert!(SigkeyManager::has_key(7u128, &db));
     }
 
     #[test]
@@ -742,9 +746,9 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 3;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
-            assert!(set.has_key(4u128));
-            assert!(set.has_key(5u128));
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
+            assert!(SigkeyManager::has_key(4u128, &db));
+            assert!(SigkeyManager::has_key(5u128, &db));
         }
 
         {
@@ -753,9 +757,9 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 4;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
-            assert!(set.has_key(4u128));
-            assert!(set.has_key(5u128));
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
+            assert!(SigkeyManager::has_key(4u128, &db));
+            assert!(SigkeyManager::has_key(5u128, &db));
         }
 
         {
@@ -764,8 +768,8 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 5;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
-            assert!(set.has_key(5u128));
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
+            assert!(SigkeyManager::has_key(5u128, &db));
         }
 
         {
@@ -774,9 +778,9 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 6;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
-            assert!(set.has_key(6u128));
-            assert!(set.has_key(7u128));
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
+            assert!(SigkeyManager::has_key(6u128, &db));
+            assert!(SigkeyManager::has_key(7u128, &db));
         }
     }
 
@@ -794,17 +798,17 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 2;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
-            assert!(set.has_key(5u128));
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
+            assert!(SigkeyManager::has_key(5u128, &db));
 
             t = 4;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
-            assert!(set.has_key(5u128));
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
+            assert!(SigkeyManager::has_key(5u128, &db));
 
             t = 6;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
-            assert!(set.has_key(6u128));
-            assert!(set.has_key(7u128));
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
+            assert!(SigkeyManager::has_key(6u128, &db));
+            assert!(SigkeyManager::has_key(7u128, &db));
         }
 
         {
@@ -813,15 +817,15 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 3;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
-            assert!(set.has_key(4u128));
-            assert!(set.has_key(5u128));
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
+            assert!(SigkeyManager::has_key(4u128, &db));
+            assert!(SigkeyManager::has_key(5u128, &db));
 
             t = 5;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
 
             t = 7;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
         }
 
         {
@@ -830,11 +834,11 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 4;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
-            assert!(set.has_key(5u128));
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
+            assert!(SigkeyManager::has_key(5u128, &db));
 
             t = 7;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
         }
     }
 
@@ -853,17 +857,17 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 3;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
-            assert!(set.has_key(6u128));
-            assert!(set.has_key(9u128));
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
+            assert!(SigkeyManager::has_key(6u128, &db));
+            assert!(SigkeyManager::has_key(9u128, &db));
 
             t = 5;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
-            assert!(set.has_key(6u128));
-            assert!(set.has_key(9u128));
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
+            assert!(SigkeyManager::has_key(6u128, &db));
+            assert!(SigkeyManager::has_key(9u128, &db));
 
             t = 9;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
         }
 
         {
@@ -872,17 +876,17 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 4;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
-            assert!(set.has_key(5u128));
-            assert!(set.has_key(6u128));
-            assert!(set.has_key(9u128));
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
+            assert!(SigkeyManager::has_key(5u128, &db));
+            assert!(SigkeyManager::has_key(6u128, &db));
+            assert!(SigkeyManager::has_key(9u128, &db));
 
             t = 10;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
-            assert!(set.has_key(13u128));
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
+            assert!(SigkeyManager::has_key(13u128, &db));
 
             t = 13;
-            fast_forward_and_check(&mut set, t, &gens, &mut rng);
+            fast_forward_and_check(&mut set, t, &gens, &mut rng, &mut db);
         }
     }
 
@@ -898,7 +902,7 @@ mod tests {
 
         for i in 1..20 {
             let start = Instant::now();
-            set.simple_update(&gens, &mut rng).unwrap();
+            set.simple_update(&gens, &mut rng, &mut db).unwrap();
             println!(
                 "For l={}, time to update key from t={} to t={} is {:?}",
                 l,
@@ -921,7 +925,7 @@ mod tests {
 
         for i in 1..40 {
             let start = Instant::now();
-            set.simple_update(&gens, &mut rng).unwrap();
+            set.simple_update(&gens, &mut rng, &mut db).unwrap();
             println!(
                 "For l={}, time to update key from t={} to t={} is {:?}",
                 l,
@@ -946,7 +950,7 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             let start = Instant::now();
-            set.fast_forward_update(3, &gens, &mut rng).unwrap();
+            set.fast_forward_update(3, &gens, &mut rng, &mut db).unwrap();
             println!(
                 "For l={}, time to update key from t=1 to t=3 is {:?}",
                 l,
@@ -954,7 +958,7 @@ mod tests {
             );
 
             let start = Instant::now();
-            set.fast_forward_update(15, &gens, &mut rng).unwrap();
+            set.fast_forward_update(15, &gens, &mut rng, &mut db).unwrap();
             println!(
                 "For l={}, time to update key from t=3 to t=15 is {:?}",
                 l,
@@ -962,7 +966,7 @@ mod tests {
             );
 
             let start = Instant::now();
-            set.fast_forward_update(35, &gens, &mut rng).unwrap();
+            set.fast_forward_update(35, &gens, &mut rng, &mut db).unwrap();
             println!(
                 "For l={}, time to update key from t=15 to t=35 is {:?}",
                 l,
@@ -970,7 +974,7 @@ mod tests {
             );
 
             let start = Instant::now();
-            set.fast_forward_update(10000, &gens, &mut rng).unwrap();
+            set.fast_forward_update(10000, &gens, &mut rng, &mut db).unwrap();
             println!(
                 "For l={}, time to update key from t=35 to t=10000 is {:?}",
                 l,
@@ -978,7 +982,7 @@ mod tests {
             );
 
             let start = Instant::now();
-            set.fast_forward_update(30000, &gens, &mut rng).unwrap();
+            set.fast_forward_update(30000, &gens, &mut rng, &mut db).unwrap();
             println!(
                 "For l={}, time to update key from t=10000 to t=30000 is {:?}",
                 l,
@@ -986,7 +990,7 @@ mod tests {
             );
 
             let start = Instant::now();
-            set.fast_forward_update(65535, &gens, &mut rng).unwrap();
+            set.fast_forward_update(65535, &gens, &mut rng, &mut db).unwrap();
             println!(
                 "For l={}, time to update key from t=30000 to t=65535 is {:?}",
                 l,
@@ -1000,7 +1004,7 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             let start = Instant::now();
-            set.fast_forward_update(50000, &gens, &mut rng).unwrap();
+            set.fast_forward_update(50000, &gens, &mut rng, &mut db).unwrap();
             println!(
                 "For l={}, time to update key from t=1 to t=50000 is {:?}",
                 l,
@@ -1008,7 +1012,7 @@ mod tests {
             );
 
             let start = Instant::now();
-            set.fast_forward_update(65535, &gens, &mut rng).unwrap();
+            set.fast_forward_update(65535, &gens, &mut rng, &mut db).unwrap();
             println!(
                 "For l={}, time to update key from t=50000 to t=65535 is {:?}",
                 l,
@@ -1031,7 +1035,7 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             let start = Instant::now();
-            set.fast_forward_update(3, &gens, &mut rng).unwrap();
+            set.fast_forward_update(3, &gens, &mut rng, &mut db).unwrap();
             println!(
                 "For l={}, time to update key from t=1 to t=3 is {:?}",
                 l,
@@ -1039,7 +1043,7 @@ mod tests {
             );
 
             let start = Instant::now();
-            set.fast_forward_update(19, &gens, &mut rng).unwrap();
+            set.fast_forward_update(19, &gens, &mut rng, &mut db).unwrap();
             println!(
                 "For l={}, time to update key from t=3 to t=19 is {:?}",
                 l,
@@ -1047,7 +1051,7 @@ mod tests {
             );
 
             let start = Instant::now();
-            set.fast_forward_update(4096, &gens, &mut rng).unwrap();
+            set.fast_forward_update(4096, &gens, &mut rng, &mut db).unwrap();
             println!(
                 "For l={}, time to update key from t=19 to t=4096 is {:?}",
                 l,
@@ -1055,7 +1059,7 @@ mod tests {
             );
 
             let start = Instant::now();
-            set.fast_forward_update(1048550, &gens, &mut rng).unwrap();
+            set.fast_forward_update(1048550, &gens, &mut rng, &mut db).unwrap();
             println!(
                 "For l={}, time to update key from t=4096 to t=1048550 is {:?}",
                 l,
@@ -1069,7 +1073,7 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             let start = Instant::now();
-            set.fast_forward_update(19, &gens, &mut rng).unwrap();
+            set.fast_forward_update(19, &gens, &mut rng, &mut db).unwrap();
             println!(
                 "For l={}, time to update key from t=1 to t=19 is {:?}",
                 l,
@@ -1077,7 +1081,7 @@ mod tests {
             );
 
             let start = Instant::now();
-            set.fast_forward_update(65535, &gens, &mut rng).unwrap();
+            set.fast_forward_update(65535, &gens, &mut rng, &mut db).unwrap();
             println!(
                 "For l={}, time to update key from t=19 to t=65535 is {:?}",
                 l,
@@ -1085,7 +1089,7 @@ mod tests {
             );
 
             let start = Instant::now();
-            set.fast_forward_update(1048575, &gens, &mut rng).unwrap();
+            set.fast_forward_update(1048575, &gens, &mut rng, &mut db).unwrap();
             println!(
                 "For l={}, time to update key from t=65535 to t=1048575 is {:?}",
                 l,

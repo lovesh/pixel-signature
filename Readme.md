@@ -1,9 +1,11 @@
 # Pixel: Forward secure Multi-signatures
 
 1. Based on the paper [Pixel: Multi-signatures for Consensus](https://eprint.iacr.org/2019/514) 
-2. Using [MIRACL's AMCL library](https://github.com/miracl/amcl).
-3. Using BLS12-381 curve.
-4. Contains the simple key update and fast forward update mechanism.
+1. Using [MIRACL's AMCL library](https://github.com/miracl/amcl).
+1. Using BLS12-381 curve.
+1. The groups (G1 or G2) between signature and verification key can be swapped by using compile time feature. 
+1. Provides the simple key update (key for next time period) and fast forward key update (key for arbitrary time in future) mechanism.
+1. Provides the threshold signature mechanism. This is not mentioned in the paper but the idea is same as BLS signatures.
 
 ## Overview
 Forward security is achieved by dividing time into periods and each time period has an associated signing key. 
@@ -31,6 +33,7 @@ In fast forward case, i.e. signer wants to advance to a time period not immediat
 nodes 3, 6 and 9 (no need to derive key for node 2) and then remove key for node 1. 
 
 ## API
+1. Verification key can be kept in group G1 or G2 by using feature `VerkeyG1` or `VerkeyG2` respectively.  
 1. There is a `Sigkey` object denoting the signing key for a time period. A signer needs to maintain a bunch of signing keys. 
 1. That is done through the `SigkeyManager` object. `SigkeyManager` is accompanied by a database object implementing the `SigKeyDb` interface. 
 `SigkeyManager` keeps the current time period and `SigKeyDb` keeps the signing keys. For testing, `InMemorySigKeyDb` is given which implements
@@ -49,13 +52,21 @@ and same time period no matter how many times this method is called.
 1. Call `Verkey::aggregate` to aggregate verkeys.
 1. Call `Signature::aggregate` to aggregate signatures.
 1. Call `Signature::verify_aggregated` to verify an aggregated signature by passing all verkeys.
-1. Call `Signature::verify` to verify aggregated signature if the verkey has already been aggregated.
+1. Call `Signature::verify` to verify aggregated signature if the verkeys have already been aggregated (`Verkey::aggregate`).
+1. For threshold signatures, use `ThresholdScheme::aggregate_sigs` to combine signatures from signers. 
+To create the threshold verification key, use `ThresholdScheme::aggregate_vk`
 
 ## Benchmarking
 There are tests which measure the time for signing and key update (both simple and fast forward). These 
 tests have names prefixed with `timing`. Those tests use either a height of 15 or 19 (l=16 or l=20), so 
 they support 65535 and 1048575 keys respectively. To run all of them, do
 ```
-RUST_TEST_THREADS=1 cargo test --release -- --nocapture timing
+RUST_TEST_THREADS=1 cargo test --no-default-features --features VerkeyG2 -- --nocapture timing
+```
+
+Or to keep verification key in group G1
+
+```
+RUST_TEST_THREADS=1 cargo test --no-default-features --features VerkeyG1 -- --nocapture timing
 ```
 This will time for various operations.

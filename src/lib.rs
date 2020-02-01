@@ -17,6 +17,8 @@ pub type SignatureGroupVec = amcl_wrapper::group_elem_g1::G1Vector;
 #[cfg(feature = "VerkeyG2")]
 pub type VerkeyGroup = amcl_wrapper::group_elem_g2::G2;
 #[cfg(feature = "VerkeyG2")]
+pub type VerkeyGroupVec = amcl_wrapper::group_elem_g2::G2Vector;
+#[cfg(feature = "VerkeyG2")]
 pub fn ate_2_pairing(
     g1: &SignatureGroup,
     g2: &VerkeyGroup,
@@ -37,6 +39,8 @@ pub type SignatureGroup = amcl_wrapper::group_elem_g2::G2;
 pub type SignatureGroupVec = amcl_wrapper::group_elem_g2::G2Vector;
 #[cfg(feature = "VerkeyG1")]
 pub type VerkeyGroup = amcl_wrapper::group_elem_g1::G1;
+#[cfg(feature = "VerkeyG1")]
+pub type VerkeyGroupVec = amcl_wrapper::group_elem_g1::G1Vector;
 #[cfg(feature = "VerkeyG1")]
 pub fn ate_2_pairing(
     g1: &SignatureGroup,
@@ -67,6 +71,7 @@ pub mod errors;
 pub mod keys;
 pub mod signature;
 pub mod util;
+pub mod threshold_sig;
 
 // TODO: Add a high level object that orchestrates key update and signing. Like if the signing has to
 // be done for t=x and current time in SigkeyManager is y<x, it should update time to t=x.

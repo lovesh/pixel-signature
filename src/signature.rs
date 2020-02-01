@@ -210,7 +210,7 @@ impl Signature {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keys::{setup, InMemorySigKeyDb, Keypair, SigkeyManager};
+    use crate::keys::{setup, InMemorySigKeyDb, Keypair, SigkeyManager, SigKeyDb};
     use crate::util::calculate_l;
     use rand::rngs::ThreadRng;
     // For benchmarking
@@ -223,8 +223,9 @@ mod tests {
         l: u8,
         gens: &GeneratorSet,
         mut rng: &mut R,
+        db: &dyn SigKeyDb
     ) {
-        let sk = set.get_key(t).unwrap();
+        let sk = SigkeyManager::get_key(t, db).unwrap();
         let msg = "Hello".as_bytes();
         let sig = Signature::new(msg, t, l, &gens, &sk, &mut rng).unwrap();
         assert!(sig.verify(msg, t, l, &gens, &vk).unwrap());
@@ -237,9 +238,10 @@ mod tests {
         l: u8,
         gens: &GeneratorSet,
         mut rng: &mut R,
+        db: &mut dyn SigKeyDb
     ) {
-        set.fast_forward_update(t, &gens, &mut rng).unwrap();
-        create_sig_and_verify(&set, t, &vk, l, &gens, &mut rng);
+        set.fast_forward_update(t, &gens, &mut rng, db).unwrap();
+        create_sig_and_verify(&set, t, &vk, l, &gens, &mut rng, db);
     }
 
     #[test]
@@ -250,7 +252,7 @@ mod tests {
         let mut db = InMemorySigKeyDb::new();
         let (gens, vk, set, _) = setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
         let t = 1u128;
-        create_sig_and_verify::<ThreadRng>(&set, t, &vk, l, &gens, &mut rng);
+        create_sig_and_verify::<ThreadRng>(&set, t, &vk, l, &gens, &mut rng, &db);
     }
 
     #[test]
@@ -263,7 +265,7 @@ mod tests {
             setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
         let t1 = 1u128;
         let msg = "Hello".as_bytes();
-        let sk1 = set.get_key(t1).unwrap();
+        let sk1 = SigkeyManager::get_key(t1, &db).unwrap();
 
         // In-deterministic and deterministic signatures for t=1
 
@@ -286,8 +288,8 @@ mod tests {
 
         // In-deterministic and deterministic signatures for t=2, doing the same checks as above
         let t2 = 2u128;
-        set.simple_update(&gens, &mut rng).unwrap();
-        let sk2 = set.get_key(t2).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        let sk2 = SigkeyManager::get_key(t2, &db).unwrap();
 
         let sig3 = Signature::new(msg, t2, l, &gens, &sk2, &mut rng).unwrap();
         let sig3_deterministic = Signature::new_deterministic(msg, t2, l, &gens, &sk2).unwrap();
@@ -316,32 +318,32 @@ mod tests {
             setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
         // t=2
-        set.simple_update(&gens, &mut rng).unwrap();
-        create_sig_and_verify::<ThreadRng>(&set, 2u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 5u128, &vk, l, &gens, &mut rng);
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        create_sig_and_verify::<ThreadRng>(&set, 2u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 5u128, &vk, l, &gens, &mut rng, &db);
 
         // t=3
-        set.simple_update(&gens, &mut rng).unwrap();
-        create_sig_and_verify::<ThreadRng>(&set, 3u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 4u128, &vk, l, &gens, &mut rng);
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        create_sig_and_verify::<ThreadRng>(&set, 3u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 4u128, &vk, l, &gens, &mut rng, &db);
 
         // t=4
-        set.simple_update(&gens, &mut rng).unwrap();
-        create_sig_and_verify::<ThreadRng>(&set, 4u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 5u128, &vk, l, &gens, &mut rng);
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        create_sig_and_verify::<ThreadRng>(&set, 4u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 5u128, &vk, l, &gens, &mut rng, &db);
 
         // t=5
-        set.simple_update(&gens, &mut rng).unwrap();
-        create_sig_and_verify::<ThreadRng>(&set, 5u128, &vk, l, &gens, &mut rng);
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        create_sig_and_verify::<ThreadRng>(&set, 5u128, &vk, l, &gens, &mut rng, &db);
 
         // t=6
-        set.simple_update(&gens, &mut rng).unwrap();
-        create_sig_and_verify::<ThreadRng>(&set, 6u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 7u128, &vk, l, &gens, &mut rng);
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        create_sig_and_verify::<ThreadRng>(&set, 6u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 7u128, &vk, l, &gens, &mut rng, &db);
 
         // t=7
-        set.simple_update(&gens, &mut rng).unwrap();
-        create_sig_and_verify::<ThreadRng>(&set, 7u128, &vk, l, &gens, &mut rng);
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        create_sig_and_verify::<ThreadRng>(&set, 7u128, &vk, l, &gens, &mut rng, &db);
     }
 
     #[test]
@@ -354,57 +356,57 @@ mod tests {
             setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
         // t=2
-        set.simple_update(&gens, &mut rng).unwrap();
-        create_sig_and_verify::<ThreadRng>(&set, 2u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 9u128, &vk, l, &gens, &mut rng);
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        create_sig_and_verify::<ThreadRng>(&set, 2u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 9u128, &vk, l, &gens, &mut rng, &db);
 
         // t=3
-        set.simple_update(&gens, &mut rng).unwrap();
-        create_sig_and_verify::<ThreadRng>(&set, 3u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 6u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 9u128, &vk, l, &gens, &mut rng);
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        create_sig_and_verify::<ThreadRng>(&set, 3u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 6u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 9u128, &vk, l, &gens, &mut rng, &db);
 
         // t=4
-        set.simple_update(&gens, &mut rng).unwrap();
-        create_sig_and_verify::<ThreadRng>(&set, 4u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 5u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 6u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 9u128, &vk, l, &gens, &mut rng);
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        create_sig_and_verify::<ThreadRng>(&set, 4u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 5u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 6u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 9u128, &vk, l, &gens, &mut rng, &db);
 
         // t=5
-        set.simple_update(&gens, &mut rng).unwrap();
-        create_sig_and_verify::<ThreadRng>(&set, 5u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 6u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 9u128, &vk, l, &gens, &mut rng);
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        create_sig_and_verify::<ThreadRng>(&set, 5u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 6u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 9u128, &vk, l, &gens, &mut rng, &db);
 
         // t=6
-        set.simple_update(&gens, &mut rng).unwrap();
-        create_sig_and_verify::<ThreadRng>(&set, 6u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 9u128, &vk, l, &gens, &mut rng);
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        create_sig_and_verify::<ThreadRng>(&set, 6u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 9u128, &vk, l, &gens, &mut rng, &db);
 
         // t=7
-        set.simple_update(&gens, &mut rng).unwrap();
-        create_sig_and_verify::<ThreadRng>(&set, 7u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 8u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 9u128, &vk, l, &gens, &mut rng);
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        create_sig_and_verify::<ThreadRng>(&set, 7u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 8u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 9u128, &vk, l, &gens, &mut rng, &db);
 
         // t=8
-        set.simple_update(&gens, &mut rng).unwrap();
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
 
         // t=9
-        set.simple_update(&gens, &mut rng).unwrap();
-        create_sig_and_verify::<ThreadRng>(&set, 9u128, &vk, l, &gens, &mut rng);
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        create_sig_and_verify::<ThreadRng>(&set, 9u128, &vk, l, &gens, &mut rng, &db);
 
         // t=10
-        set.simple_update(&gens, &mut rng).unwrap();
-        create_sig_and_verify::<ThreadRng>(&set, 10u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 13u128, &vk, l, &gens, &mut rng);
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        create_sig_and_verify::<ThreadRng>(&set, 10u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 13u128, &vk, l, &gens, &mut rng, &db);
 
         // t=11
-        set.simple_update(&gens, &mut rng).unwrap();
-        create_sig_and_verify::<ThreadRng>(&set, 11u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 12u128, &vk, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&set, 13u128, &vk, l, &gens, &mut rng);
+        set.simple_update(&gens, &mut rng, &mut db).unwrap();
+        create_sig_and_verify::<ThreadRng>(&set, 11u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 12u128, &vk, l, &gens, &mut rng, &db);
+        create_sig_and_verify::<ThreadRng>(&set, 13u128, &vk, l, &gens, &mut rng, &db);
     }
 
     #[test]
@@ -420,7 +422,7 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 3;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
         }
 
         {
@@ -429,7 +431,7 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 4;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
         }
 
         {
@@ -438,7 +440,7 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 5;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
         }
 
         {
@@ -447,7 +449,7 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 6;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
         }
 
         {
@@ -456,7 +458,7 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 7;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
         }
     }
 
@@ -471,13 +473,13 @@ mod tests {
             setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
         t = 2;
-        fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+        fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
 
         t = 4;
-        fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+        fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
 
         t = 6;
-        fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+        fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
     }
 
     #[test]
@@ -493,13 +495,13 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 3;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
 
             t = 8;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
 
             t = 13;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
         }
 
         {
@@ -508,13 +510,13 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 6;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
 
             t = 8;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
 
             t = 13;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
         }
     }
 
@@ -531,25 +533,25 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 4;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
 
             t = 15;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
 
             t = 16;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
 
             t = 32;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
 
             t = 1024;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
 
             t = 4095;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
 
             t = 65535;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
         }
 
         {
@@ -558,16 +560,16 @@ mod tests {
                 setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
             t = 15;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
 
             t = 1023;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
 
             t = 8191;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
 
             t = 16384;
-            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng);
+            fast_forward_sig_and_verify(&mut set, t, &vk, l, &gens, &mut rng, &mut db);
         }
     }
 
@@ -586,14 +588,14 @@ mod tests {
         let (keypair2, mut sigkey_set2) = Keypair::new(T, &gens, &mut rng, &mut db2).unwrap();
         let vk2 = keypair2.ver_key;
 
-        create_sig_and_verify::<ThreadRng>(&sigkey_set1, t, &vk1, l, &gens, &mut rng);
-        create_sig_and_verify::<ThreadRng>(&sigkey_set2, t, &vk2, l, &gens, &mut rng);
+        create_sig_and_verify::<ThreadRng>(&sigkey_set1, t, &vk1, l, &gens, &mut rng, &db1);
+        create_sig_and_verify::<ThreadRng>(&sigkey_set2, t, &vk2, l, &gens, &mut rng, &db2);
 
         {
             let msg = "Hello".as_bytes();
-            let sk1 = sigkey_set1.get_key(t).unwrap();
+            let sk1 = SigkeyManager::get_key(t, &db1).unwrap();
             let sig1 = Signature::new(msg, t, l, &gens, &sk1, &mut rng).unwrap();
-            let sk2 = sigkey_set2.get_key(t).unwrap();
+            let sk2 = SigkeyManager::get_key(t, &db2).unwrap();
             let sig2 = Signature::new(msg, t, l, &gens, &sk2, &mut rng).unwrap();
 
             let asig = Signature::aggregate(vec![&sig1, &sig2]);
@@ -604,13 +606,13 @@ mod tests {
 
         {
             t = 3;
-            sigkey_set1.fast_forward_update(t, &gens, &mut rng).unwrap();
-            sigkey_set2.fast_forward_update(t, &gens, &mut rng).unwrap();
+            sigkey_set1.fast_forward_update(t, &gens, &mut rng, &mut db1).unwrap();
+            sigkey_set2.fast_forward_update(t, &gens, &mut rng, &mut db2).unwrap();
 
             let msg = "Hello".as_bytes();
-            let sk1 = sigkey_set1.get_key(t).unwrap();
+            let sk1 = SigkeyManager::get_key(t, &db1).unwrap();
             let sig1 = Signature::new(msg, t, l, &gens, &sk1, &mut rng).unwrap();
-            let sk2 = sigkey_set2.get_key(t).unwrap();
+            let sk2 = SigkeyManager::get_key(t, &db2).unwrap();
             let sig2 = Signature::new(msg, t, l, &gens, &sk2, &mut rng).unwrap();
 
             let asig = Signature::aggregate(vec![&sig1, &sig2]);
@@ -621,13 +623,13 @@ mod tests {
 
         {
             t = 5;
-            sigkey_set1.fast_forward_update(t, &gens, &mut rng).unwrap();
-            sigkey_set2.fast_forward_update(t, &gens, &mut rng).unwrap();
+            sigkey_set1.fast_forward_update(t, &gens, &mut rng, &mut db1).unwrap();
+            sigkey_set2.fast_forward_update(t, &gens, &mut rng, &mut db2).unwrap();
 
             let msg = "Hello".as_bytes();
-            let sk1 = sigkey_set1.get_key(t).unwrap();
+            let sk1 = SigkeyManager::get_key(t, &db1).unwrap();
             let sig1 = Signature::new(msg, t, l, &gens, &sk1, &mut rng).unwrap();
-            let sk2 = sigkey_set2.get_key(t).unwrap();
+            let sk2 = SigkeyManager::get_key(t, &db2).unwrap();
             let sig2 = Signature::new(msg, t, l, &gens, &sk2, &mut rng).unwrap();
 
             let asig = Signature::aggregate(vec![&sig1, &sig2]);
@@ -650,8 +652,8 @@ mod tests {
             setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
         for t in 2..20 {
-            set.simple_update(&gens, &mut rng).unwrap();
-            let sk = set.get_key(t).unwrap();
+            set.simple_update(&gens, &mut rng, &mut db).unwrap();
+            let sk = SigkeyManager::get_key(t, &db).unwrap();
             let start = Instant::now();
             let sig = Signature::new(msg, t, l, &gens, &sk, &mut rng).unwrap();
             println!(
@@ -685,8 +687,8 @@ mod tests {
             setup::<ThreadRng>(T, "test_pixel", &mut rng, &mut db).unwrap();
 
         for t in 2..30 {
-            set.simple_update(&gens, &mut rng).unwrap();
-            let sk = set.get_key(t).unwrap();
+            set.simple_update(&gens, &mut rng, &mut db).unwrap();
+            let sk = SigkeyManager::get_key(t, &db).unwrap();
             let start = Instant::now();
             let sig = Signature::new(msg, t, l, &gens, &sk, &mut rng).unwrap();
             println!(
