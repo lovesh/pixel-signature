@@ -1,6 +1,6 @@
 [package]
 name = "pixel-sig"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["lovesh <lovesh.bond@gmail.com>"]
 edition = "2018"
 description = "Pixel: Forward secure Multi-signatures"
@@ -19,3 +19,8 @@ version = "0.3.5"
 #path = "../amcl_wrapper/"
 default-features = false
 features = ["bls381"]
+
+[features]
+default = ["VerkeyG2"]
+VerkeyG2 = []    # Verification key is in G2 and all but one element of signature are in G1
+VerkeyG1 = []    # Verification key is in G1 and all but one element of signature are in G2

@@ -1,19 +1,18 @@
 use rand::{CryptoRng, RngCore};
 
-use amcl_wrapper::extension_field_gt::GT;
+
 use amcl_wrapper::field_elem::{FieldElement, FieldElementVector};
 use amcl_wrapper::group_elem::{GroupElement, GroupElementVector};
-use amcl_wrapper::group_elem_g1::{G1Vector, G1};
-use amcl_wrapper::group_elem_g2::G2;
 
 use crate::errors::PixelError;
 use crate::keys::{Sigkey, Verkey};
 use crate::util::{calculate_path_factor_using_t_l, from_node_num_to_path, GeneratorSet};
+use crate::{SignatureGroupVec, SignatureGroup, VerkeyGroup, ate_multi_pairing};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Signature {
-    pub sigma_1: G1,
-    pub sigma_2: G2,
+    pub sigma_1: SignatureGroup,
+    pub sigma_2: VerkeyGroup,
 }
 
 impl Signature {
@@ -45,13 +44,13 @@ impl Signature {
         if gens.1.len() < (l as usize + 2) {
             return Err(PixelError::NotEnoughGenerators { n: l as usize + 2 });
         }
-        let r = Self::gen_sig_rand(msg, sig_key);
+        let r = Self::gen_sig_rand(msg, t, sig_key);
         Self::gen_sig(msg, t, l, gens, sig_key, r)
     }
 
     pub fn aggregate(sigs: Vec<&Self>) -> Self {
-        let mut asig_1 = G1::identity();
-        let mut asig_2 = G2::identity();
+        let mut asig_1 = SignatureGroup::identity();
+        let mut asig_2 = VerkeyGroup::identity();
         for s in sigs {
             asig_1 += &s.sigma_1;
             asig_2 += &s.sigma_2;
@@ -98,13 +97,14 @@ impl Signature {
         FieldElement::from_msg_hash(message)
     }
 
-    /// Generate random number for signature using message and signing key for that time period.
-    fn gen_sig_rand(message: &[u8], sig_key: &Sigkey) -> FieldElement {
+    /// Generate random number for signature using message time period and signing key for that time period.
+    fn gen_sig_rand(message: &[u8], t: u128, sig_key: &Sigkey) -> FieldElement {
         let mut bytes = message.to_vec();
         bytes.extend_from_slice(&sig_key.0.to_bytes());
         for i in &sig_key.1 {
             bytes.extend_from_slice(&i.to_bytes());
         }
+        bytes.extend_from_slice(&t.to_le_bytes());
         FieldElement::from_msg_hash(&bytes)
     }
 
@@ -116,8 +116,8 @@ impl Signature {
         sig_key: &Sigkey,
         r: FieldElement,
     ) -> Result<Self, PixelError> {
-        let c: G2 = sig_key.0.clone();
-        let d: G1 = sig_key.1[0].clone();
+        let c = sig_key.0.clone();
+        let d = sig_key.1[0].clone();
 
         // Hash(msg) -> FieldElement
         let m = Self::hash_message(msg);
@@ -125,12 +125,12 @@ impl Signature {
         let sigma_2 = &c + (&gens.0 * &r);
 
         // e_l
-        let e_l: G1 = sig_key.1[sig_key.1.len() - 1].clone();
+        let e_l = sig_key.1[sig_key.1.len() - 1].clone();
         let pf = calculate_path_factor_using_t_l(t, l, gens)?;
 
         // sigma_1 = d + (e_l * &m) + (pf + (gens.1[l as usize + 1] * m))*r
         let mut sigma_1 = d;
-        let mut points = G1Vector::with_capacity(3);
+        let mut points = SignatureGroupVec::with_capacity(3);
         let mut scalars = FieldElementVector::with_capacity(3);
 
         // (e_l * &m)
@@ -154,9 +154,9 @@ impl Signature {
     }
 
     fn verify_naked(
-        sigma_1: &G1,
-        sigma_2: &G2,
-        verkey: &G2,
+        sigma_1: &SignatureGroup,
+        sigma_2: &VerkeyGroup,
+        verkey: &VerkeyGroup,
         msg: &[u8],
         t: u128,
         l: u8,
@@ -174,7 +174,7 @@ impl Signature {
         // Which comes out to be e(h, y) * e(sigma_1_1, sigma_2) * e(sigma_1, -g2) == 1 which can put in a multi-pairing.
         // -g2 can be precomputed if performance is critical
         // Similarly it might be better to precompute e(h, y) and do a 2-pairing than a 3-pairing
-        let e = GT::ate_multi_pairing(vec![
+        let e = ate_multi_pairing(vec![
             (&sigma_1, &g2.negation()),
             (h, y),
             (&sigma_1_1, sigma_2),

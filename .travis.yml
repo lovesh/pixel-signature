@@ -2,5 +2,5 @@ language: rust
 rust:
   - stable
 script:
-  - cargo build --release
-  - cargo test --release
+  - cargo test --release --no-default-features --features VerkeyG1
+  - cargo test --release --no-default-features --features VerkeyG2

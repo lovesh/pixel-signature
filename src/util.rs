@@ -1,28 +1,27 @@
 use crate::amcl_wrapper::group_elem::GroupElement;
 use crate::errors::PixelError;
 use amcl_wrapper::field_elem::FieldElement;
-use amcl_wrapper::group_elem_g1::G1;
-use amcl_wrapper::group_elem_g2::G2;
+use crate::{VerkeyGroup, SignatureGroup};
 
-/// second element is a vector with length l+2 and is of form [h, h_0, h_1, h_2, ..., h_l]
-pub struct GeneratorSet(pub G2, pub Vec<G1>);
+/// second element is a vector of length l+2 and is of form [h, h_0, h_1, h_2, ..., h_l]
+pub struct GeneratorSet(pub VerkeyGroup, pub Vec<SignatureGroup>);
 
 impl GeneratorSet {
     pub fn new(T: u128, prefix: &str) -> Result<Self, PixelError> {
         Ok(GeneratorSet(
-            G2::from_msg_hash(prefix.as_bytes()),
+            VerkeyGroup::from_msg_hash(prefix.as_bytes()),
             Self::create_generators(T, prefix)?,
         ))
     }
 
     /// Returns generators to be used in the protocol. Takes time period T and a prefix string that is
     /// used to create generators by hashing the prefix string concatenated with integers. T+1 must be a power of 2.
-    pub fn create_generators(T: u128, prefix: &str) -> Result<Vec<G1>, PixelError> {
+    pub fn create_generators(T: u128, prefix: &str) -> Result<Vec<SignatureGroup>, PixelError> {
         let l = calculate_l(T)? as usize;
         let mut params = Vec::with_capacity(l + 2);
         for i in 0..(l + 2) {
             let s: String = prefix.to_string() + &i.to_string();
-            params.push(G1::from_msg_hash(s.as_bytes()));
+            params.push(SignatureGroup::from_msg_hash(s.as_bytes()));
         }
         Ok(params)
     }
@@ -138,20 +137,20 @@ pub fn calculate_path_factor_using_t_l(
     t: u128,
     l: u8,
     gens: &GeneratorSet,
-) -> Result<G1, PixelError> {
+) -> Result<SignatureGroup, PixelError> {
     // TODO: Find better name for this function
     let path = from_node_num_to_path(t, l)?;
     calculate_path_factor(path, gens)
 }
 
 /// Calculate h_0*h_1^path[0]*h_2^path[2]*......
-pub fn calculate_path_factor(path: Vec<u8>, gens: &GeneratorSet) -> Result<G1, PixelError> {
+pub fn calculate_path_factor(path: Vec<u8>, gens: &GeneratorSet) -> Result<SignatureGroup, PixelError> {
     // TODO: Find better name for this function
 
     if gens.1.len() < (path.len() + 2) {
         return Err(PixelError::NotEnoughGenerators { n: path.len() + 2 });
     }
-    let mut sigma_1_1: G1 = gens.1[1].clone(); // h_0
+    let mut sigma_1_1 = gens.1[1].clone(); // h_0
 
     // h_0*h_1^path[0]*h_2^path[2]*......
     for (i, p) in path.iter().enumerate() {

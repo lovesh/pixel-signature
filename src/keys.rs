@@ -3,17 +3,16 @@ use rand::{CryptoRng, RngCore};
 use amcl_wrapper::errors::SerzDeserzError;
 use amcl_wrapper::field_elem::FieldElement;
 use amcl_wrapper::group_elem::{GroupElement, GroupElementVector};
-use amcl_wrapper::group_elem_g1::G1;
-use amcl_wrapper::group_elem_g2::G2;
 
 use super::errors::PixelError;
 use crate::util::{
     calculate_l, calculate_path_factor, from_node_num_to_path, node_successor_paths,
     path_to_node_num, GeneratorSet,
 };
-use amcl_wrapper::extension_field_gt::GT;
+
 use std::collections::{HashMap, HashSet};
 use std::mem;
+use crate::{VerkeyGroup, SignatureGroup, ate_2_pairing};
 
 /// MasterSecret will be cleared on drop as FieldElement is cleared on drop
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -40,18 +39,18 @@ impl MasterSecret {
 // The public key can be in group G1 or G2.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Verkey {
-    pub value: G2,
+    pub value: VerkeyGroup,
 }
 
 impl Verkey {
-    pub fn from_master_secret(master_secret: &MasterSecret, generator: &G2) -> Self {
+    pub fn from_master_secret(master_secret: &MasterSecret, generator: &VerkeyGroup) -> Self {
         Self {
             value: generator * &master_secret.value,
         }
     }
 
     pub fn aggregate(ver_keys: Vec<&Self>) -> Self {
-        let mut avk: G2 = G2::identity();
+        let mut avk= VerkeyGroup::identity();
         for vk in ver_keys {
             avk += &vk.value;
         }
@@ -59,7 +58,7 @@ impl Verkey {
     }
 
     pub fn from_bytes(vk_bytes: &[u8]) -> Result<Verkey, SerzDeserzError> {
-        G2::from_bytes(vk_bytes).map(|value| Verkey { value })
+        VerkeyGroup::from_bytes(vk_bytes).map(|value| Verkey { value })
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -80,7 +79,7 @@ impl Verkey {
 /// If Verkey is in G2 then proof of possession is in G1 and vice versa.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProofOfPossession {
-    pub value: G1,
+    pub value: SignatureGroup,
 }
 
 /// Keypair consisting of a master secret, the corresponding verkey and the proof of possession
@@ -124,29 +123,29 @@ impl<'a> Keypair {
     }
 
     /// Verify proof of possession
-    pub fn verify_pop(pop: &ProofOfPossession, vk: &Verkey, gen: &G2) -> bool {
-        let lhs = GT::ate_pairing(&pop.value, &gen);
-        let rhs = GT::ate_pairing(&Self::msg_for_pop(vk), &vk.value);
-        lhs == rhs
+    pub fn verify_pop(pop: &ProofOfPossession, vk: &Verkey, gen: &VerkeyGroup) -> bool {
+        // check e(pop, gen) == e(hash(PoP||vk), vk) which is same as e(hash(PoP||vk), vk) * e(pop, gen)^-1 == 1
+        // e(hash(PoP||vk), vk) * e(pop, gen)^-1 = e(hash(PoP||vk), vk) * e(pop, gen^-1)
+        ate_2_pairing(&Self::msg_for_pop(vk), &vk.value, &pop.value, &(-gen)).is_one()
     }
 
-    fn msg_for_pop(vk: &Verkey) -> G1 {
+    fn msg_for_pop(vk: &Verkey) -> SignatureGroup {
         let mut s = PrefixPoP.to_vec();
         s.extend_from_slice(&vk.to_bytes());
-        G1::from_msg_hash(&s)
+        SignatureGroup::from_msg_hash(&s)
     }
 }
 
 /// Secret key sk can be seen as (sk', sk'') where sk'' is itself a vector with initial (and max) length l+1
 /// Sigkey will be cleared on drop as both G1 and G2 elements are cleared on drop
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Sigkey(pub G2, pub Vec<G1>);
+pub struct Sigkey(pub VerkeyGroup, pub Vec<SignatureGroup>);
 
 impl Sigkey {
     /// Create secret key for the beginning, i.e. t=1
     pub fn initial_secret_key<R: RngCore + CryptoRng>(
-        gen: &G2,
-        gens: &[G1],
+        gen: &VerkeyGroup,
+        gens: &[SignatureGroup],
         master_secret: &MasterSecret,
         rng: &mut R,
     ) -> Result<Self, PixelError> {
@@ -217,8 +216,8 @@ impl<'a> SigkeyManager<'a> {
 
         if path_len < (self.l as usize - 1) {
             // Create signing keys for left and right child
-            let c: G2 = sk.0.clone();
-            let d: G1 = sk.1[0].clone();
+            let c = sk.0.clone();
+            let d = sk.1[0].clone();
 
             // key for left child
             let mut sk_left_prime_prime = vec![&d + &sk.1[1]];
@@ -378,8 +377,8 @@ impl<'a> SigkeyManager<'a> {
         let key_path_len = key_path.len();
         let r = FieldElement::random_using_rng(rng);
 
-        let c: G2 = pred_sk.0.clone();
-        let mut d: G1 = pred_sk.1[0].clone();
+        let c = pred_sk.0.clone();
+        let mut d = pred_sk.1[0].clone();
         for i in pred_sk_path_len..key_path_len {
             if key_path[i] == 1 {
                 d += &pred_sk.1[i - pred_sk_path_len + 1];
